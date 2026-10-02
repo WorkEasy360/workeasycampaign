@@ -23,7 +23,6 @@ export async function createApp(config: AppConfig, overrides: InfrastructureOver
     bodyLimit: 1024 * 1024,
     // Request id is server-generated (never taken from the client) and doubles as the correlation id.
     genReqId: () => uuidv7(),
-    disableRequestLogging: true,
   });
   const app = await NestFactory.create<NestFastifyApplication>(AppModule.forRoot(config, overrides), adapter, {
     logger: config.env === 'test' ? ['error', 'fatal'] : LOG_LEVELS[config.logLevel],

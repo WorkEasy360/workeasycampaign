@@ -120,11 +120,10 @@ export class InvitationsService {
       const wsIds = [...new Set(rows.flatMap((r) => (r.workspaceGrants as Grant[]).map((g) => g.workspaceId)))];
       const roleIds = [...new Set(rows.flatMap((r) => (r.workspaceGrants as Grant[]).map((g) => g.roleId)))];
       const inviterIds = [...new Set(rows.map((r) => r.invitedByUserId).filter((x): x is string => !!x))];
-      const [workspaces, roles, inviters] = await Promise.all([
-        tx.workspace.findMany({ where: { id: { in: wsIds } }, select: { id: true, name: true } }),
-        tx.role.findMany({ where: { id: { in: roleIds } }, select: { id: true, name: true } }),
-        tx.user.findMany({ where: { id: { in: inviterIds } }, select: { id: true, displayName: true } }),
-      ]);
+      // Sequential on purpose: a transaction is one connection; parallel queries on it are queued anyway.
+      const workspaces = await tx.workspace.findMany({ where: { id: { in: wsIds } }, select: { id: true, name: true } });
+      const roles = await tx.role.findMany({ where: { id: { in: roleIds } }, select: { id: true, name: true } });
+      const inviters = await tx.user.findMany({ where: { id: { in: inviterIds } }, select: { id: true, displayName: true } });
       const now = Date.now();
       return rows.map((r) => ({
         id: r.id,

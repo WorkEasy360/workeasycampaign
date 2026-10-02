@@ -53,8 +53,8 @@ module.exports = {
     {
       name: 'db-testing-only-in-tests',
       severity: 'error',
-      comment: 'Owner connections and database resets exist for tests only.',
-      from: { pathNot: '(\\.test\\.tsx?$|/test/|/tests/|^packages/db/(scripts|src)/)' },
+      comment: 'Owner connections and database resets exist for tests only (unit/API suites and the E2E harness).',
+      from: { pathNot: '(\\.test\\.tsx?$|/test/|/tests/|^packages/db/(scripts|src)/|^apps/e2e/)' },
       to: { path: '^(packages/db/(src|dist)/testing\\.|@workeasy/db/testing$)' },
     },
     {

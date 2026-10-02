@@ -138,6 +138,14 @@ describe('sessions', () => {
     expect((await a.get('/v1/me')).status).toBe(200);
   });
 
+  it('does not rotate a fresh session token on every request (time-zone regression)', async () => {
+    const a = await signUp(t);
+    const first = await a.get('/v1/me');
+    const second = await a.get('/v1/me');
+    expect([first.status, second.status]).toEqual([200, 200]);
+    expect([...first.setCookies, ...second.setCookies].filter((c) => c.startsWith('wk_session='))).toEqual([]);
+  });
+
   it('cannot revoke a session belonging to someone else', async () => {
     const a = await signUp(t);
     const b = await signUp(t);

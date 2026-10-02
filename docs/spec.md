@@ -1,339 +1,461 @@
-# Workeasy Campaign — Reconciled Product Specification
+# Workeasy Campaign — Product Specification
 
-Status: v1.0 (build step 1). Sources: the product brief (Parts 1–4, Modules 1–10), Part 1's capability list for
-modules the brief does not detail, and a review of Zoho Campaigns 2.0/3.0 official documentation (Oct 2026).
-Zoho is a functional reference only; every rule below is ours. "Zoho:" notes record the reference behaviour where we
-deliberately differ.
+Status: v1.1. Revised by the foundation audit, which added provenance tags, corrected the soft-bounce score and
+added the consent model from decision D3.
+Sources:
+- the product brief
+- the Zoho Campaigns 2.0/3.0 official documentation, reviewed in October 2026
+- product decisions D1–D3
 
-Conventions: **MUST** = required for the module to ship. Limits are defaults, configurable per plan unless stated.
+Zoho is a functional reference only. Where we differ from Zoho, the documented Zoho rule is recorded and our behaviour
+is stated separately.
+
+## Provenance tags
+
+Every major rule carries exactly one tag:
+
+| Tag | Meaning |
+|---|---|
+| `[ZOHO_PARITY]` | Matches behaviour documented by Zoho. |
+| `[OUR_IMPROVEMENT]` | Deliberately better than documented Zoho behaviour. The Zoho rule is quoted as **Zoho:** next to ours. |
+| `[OUR_ORIGINAL_DESIGN]` | Not a Zoho feature. It comes from the product brief or from us, marked *(brief)* or *(ours)*. |
+| `[NOT_VERIFIED]` | Zoho behaviour our research could not confirm. Do not cite it as Zoho behaviour. |
+
+**Numbers.** Unless a limit is tagged `[ZOHO_PARITY]`, it is a **proposed default**, stored as plan or organization
+configuration and never as a code constant. MUST means required for the module to ship.
 
 ---
 
 ## 0. Cross-cutting rules
 
-- **Tenancy.** Every record belongs to exactly one organization. Isolation is enforced in the service layer and by
-  Postgres RLS (see `architecture.md` §4).
-- **Channels.** Email, SMS and WhatsApp share one pipeline: audience → eligibility → delivery → events. No channel
-  contains business logic.
-- **Explainability.** Every automated decision (contact excluded, campaign paused, journey branch taken, score change)
-  stores a machine-readable reason code shown in the UI. This is a core differentiator.
-- **Audit.** Every mutation and security event is written to the audit log with actor, IP, user agent and diff.
-- **Identifiers.** UUIDv7. Public API exposes the same IDs.
-- **Time.** Stored in UTC; organization has a default time zone; contacts may have their own.
+- **Tenancy** `[OUR_ORIGINAL_DESIGN]` *(D1, D2)*:
+  - The hierarchy is Platform → Organization → Workspace.
+  - Every record has exactly one declared owner class: platform, organization, workspace, user or global. See `docs/tenancy.md`.
+  - Isolation is enforced in services and by PostgreSQL row-level security.
+- **Channels** `[OUR_ORIGINAL_DESIGN]` *(brief)*:
+  - Email, SMS and WhatsApp share one pipeline: audience → eligibility → delivery → events.
+  - No channel contains business logic.
+- **Explainability** `[OUR_IMPROVEMENT]`:
+  - Every automated decision stores a reason code that the UI shows. That covers excluded contacts, auto-pauses, journey branches and score changes.
+  - **Zoho:** reasons are not documented.
+- **Audit** `[OUR_ORIGINAL_DESIGN]`:
+  - Security-relevant mutations write an append-only audit record in the same transaction (`docs/security.md`).
+- **Events** `[OUR_ORIGINAL_DESIGN]`:
+  - Domain, integration and analytics events are distinct, and all three are append-only (`docs/events.md`).
+- **Identifiers and time:**
+  - IDs are UUIDv7.
+  - Times are stored in UTC.
+  - Each workspace has a time zone, and contacts may have their own.
 
----
+## M1. Authentication `[OUR_ORIGINAL_DESIGN]` *(brief; Zoho uses Zoho Accounts, not researched)*
 
-## M1. Authentication
+Implemented in Phase 4; see `docs/identity.md`.
 
-Flows: sign up → email verification → (create org) → app; login; logout; forgot/reset password; change password;
-session list + revoke; "remember this device" (30 days, skips MFA prompt only — never extends the session).
+**Flows:**
+- Register → verify email → create organization → first workspace.
+- Sign in and sign out.
+- Forgot and reset password; change password.
+- List and revoke sessions.
 
-Rules:
-- Passwords: min 10 chars, checked against a common/breached password list, Argon2id.
-- Email verification token: single use, 24 h, hashed at rest. Unverified users can log in but cannot send.
-- Reset token: single use, 1 h, invalidates all sessions on use.
-- Session: idle timeout 7 days, absolute 30 days, rotated on privilege change.
-- Brute force: 5 failures/15 min per account → progressive delay; 20/15 min per IP → block 15 min. Generic error
-  messages (no account enumeration).
-- Login state machine: `credentials_ok → (mfa_required → mfa_ok) → authenticated`. MFA factors (TOTP, WebAuthn),
-  OAuth (Google/Microsoft) and SAML/OIDC SSO plug into `user_identities` / `user_mfa_factors` without schema changes.
-- Org-level policy (enterprise): enforce MFA, enforce SSO, session lifetime.
+**Identity-provider abstraction** *(D1)*:
+- The platform depends on `AuthenticatedPrincipal` only.
+- The local email + password provider can be replaced by Workeasy SSO (OIDC) without migrating organization or content data.
 
-## M2. Organization, users, roles
+**Rules (proposed defaults):**
+- **Passwords:** 10–256 characters, a blocklist of common passwords, Argon2id.
+- **Email verification:** single use, valid 24 h.
+- **Password reset:** single use, valid 1 h. A reset signs out every session.
+- **Sessions:** 7 days idle and 30 days absolute; the token rotates hourly.
+- **Throttling:** 5 failures per account in 15 min locks that account temporarily; 30 failures per IP in 15 min.
+- **Anti-enumeration:** registration, forgot-password and resend always return the same response.
 
-- One user may belong to several organizations (org switcher). Invitations by email, expire in 7 days.
-- System roles (immutable, seeded): **Owner** (billing, delete org), **Admin**, **Manager** (create + send),
-  **Editor** (create/edit, cannot send), **Analyst** (reports + export), **Viewer** (read-only).
-- Custom roles: any subset of the permission catalogue. Permission granularity = `module.action`, actions from
-  `read, create, update, delete, export, send/launch, approve, manage`.
-- Org must always have ≥1 Owner. Owners cannot be removed by Admins.
-- **Approval policies** (improvement over Zoho's per-user toggle): rules such as "campaigns by role X / to audience
-  > N / on topic Y require approval by role Z". Any edit after approval invalidates it. Applies to email, SMS,
-  WhatsApp and journey launch.
-- Zoho: Workspaces inside orgs. We defer workspaces; the schema reserves a `workspace_id` seam on content tables.
+**Not yet built:** MFA, OAuth and SSO. The schema and contracts are ready for them (`user_identities`, `authMethods`).
 
-## M3. Dashboard (command center)
+## M2. Organization, workspaces, users, roles
 
-Cards: campaigns sent / scheduled, active journeys, contacts (marketing / non-marketing / unsubscribed),
-per-channel performance, deliverability health, engagement trend, revenue + conversions (when connected),
-recent activity, upcoming sends, journey failures, integration health, domain health.
+**Structure** `[ZOHO_PARITY]` (Zoho has org → workspaces) `[OUR_ORIGINAL_DESIGN]` (the detailed rules) *(D2)*:
+- Organizations contain workspaces.
+- Contacts, audiences, campaigns, journeys, templates, assets and reports are **workspace-owned**.
+- Members, roles, security, billing and the audit log are **organization-owned**.
 
-Every metric card has three layers: **value → change vs. baseline → insight + recommended action**
-(e.g. "Open rate −18% vs. last 5 campaigns. 41% of recipients inactive >90 days. → Create re-engagement segment").
-Insights come from a rules engine first (deterministic, testable), with AI phrasing as an enhancement.
-Data comes only from rollup tables; dashboard p95 < 300 ms.
+**Workspace roles** — Manager, Editor and Viewer:
+- `[ZOHO_PARITY]` Editor cannot send, and Viewer can only read.
+- `[OUR_ORIGINAL_DESIGN]` Workspace admin and Analyst.
+
+**Organization roles** `[OUR_ORIGINAL_DESIGN]`:
+- Owner, Admin and Member.
+- One explicit inheritance rule: `workspaces.access_all` gives workspace-admin rights in every workspace.
+
+**Custom roles:**
+- `[ZOHO_PARITY]` Per-module actions.
+- `[OUR_IMPROVEMENT]` Anti-escalation: you can grant only what you hold.
+
+**Ownership** `[OUR_ORIGINAL_DESIGN]`:
+- An organization always keeps at least one active owner.
+- Only owners can make or change owners.
+- Admin endpoints cannot change your own membership.
+
+**Approval policies** `[OUR_IMPROVEMENT]` *(planned for Phase 6)*:
+- Rules decide when approval is needed, for example by role, audience size or topic.
+- Any edit invalidates an earlier approval.
+- They apply to every channel and to journeys.
+- **Zoho:** approval is switched on per user, by an organization admin (2.0).
+
+## M3. Dashboard `[OUR_ORIGINAL_DESIGN]` *(brief)*
+
+- Every metric is shown at three levels: the value, the change against a baseline, and an insight with a recommended action.
+- Insights come from deterministic rules first; AI phrasing is an enhancement.
+- Dashboards read rollup tables only. p95 target: 300 ms.
+- **Phase 4 ships:** a workspace home with a setup checklist and empty states. Metrics arrive with the analytics phase.
 
 ## M4. Contacts
 
-- Fields: system (email, phone, WhatsApp number, first/last name, company, country, city, time zone, language,
-  lifecycle stage, source, owner) + custom fields (text, number, decimal, boolean, date, datetime, picklist,
-  multi-select, URL, email, phone). Max 200 custom fields/org.
-- **Identity:** a contact may have multiple channel addresses; email and phone are unique per org (normalized,
-  phone E.164). Merge duplicates with field-level survivorship; merge is audited and reversible for 30 days.
-- **Subscription type** (Zoho-compatible semantics): `marketing`, `non_marketing`, `unsubscribed`. Only marketing
-  contacts receive marketing sends and count toward plan limits. A self-unsubscribed contact can be resubscribed only
-  by their own action (form or preference center).
-- Lifecycle stage: subscriber → lead → MQL → SQL → customer → evangelist (configurable).
-- Import: CSV/XLSX up to 1M rows, streamed; column mapping with saved presets; dedupe mode (skip/update/overwrite);
-  lawful basis required when GDPR mode is on; dry-run with error report. Export: async, permission `contacts.export`,
-  audited.
-- **Timeline:** every event about the contact (created, field changed, list joined, consent granted/withdrawn,
-  message sent/delivered/opened/clicked/bounced, WhatsApp read/replied, form submitted, purchase, score changed,
-  journey entered/exited) in one filterable stream, with links to the source object.
+- Subscription types: marketing, non-marketing and unsubscribed. Only marketing contacts receive marketing sends and count toward the plan `[ZOHO_PARITY]`.
+- A contact who unsubscribed themselves can be resubscribed only by their own action `[ZOHO_PARITY]`.
+- Status changes are capped at 3× the plan's contact count per month `[ZOHO_PARITY]`. Whether we adopt this cap is a pricing decision.
+- Contacts with several identities (email, phone, WhatsApp), and merges that can be undone for 30 days `[OUR_ORIGINAL_DESIGN]`.
+- A unified timeline of every event about a contact `[OUR_ORIGINAL_DESIGN]` *(brief)*.
+- Proposed limits: 200 custom fields and imports of up to 1 M rows `[OUR_ORIGINAL_DESIGN]`.
 
 ## M5. Audience: lists, tags, suppression
 
-- **Lists** are static groupings. A contact can be in many lists. "Save segment as list" snapshots membership.
-- **Tags**: free-form labels, max 500/org, merge/rename supported.
-- **Suppression**: org-wide per channel (email address, email domain, phone). Sources: hard bounce, complaint,
-  manual, import, invalid. Suppressed addresses never send, regardless of consent. Global platform suppression
-  (known spam traps, role addresses on request) is applied on top.
+- Lists and tags `[ZOHO_PARITY]`.
+- Suppression by address, by email domain and by phone `[OUR_IMPROVEMENT]`:
+  - **Zoho:** a Do-Not-Mail registry (2.0).
+  - Domain-level suppression in Zoho is `[NOT_VERIFIED]`.
+- Suppressed addresses never receive a send, whatever their consent.
 
 ## M6. Segments
 
-- Condition AST: groups with AND/OR, NOT on any node, nesting depth ≤ 5, ≤ 100 conditions (Zoho: 50 criteria /
-  10 groups, flat).
-- Condition sources: contact & custom fields, geography, demographics, email/SMS/WhatsApp behaviour
-  (with time windows and counts, e.g. "opened ≥ 3 in last 30 days"), website events, purchases (count, amount,
-  product, recency), CRM fields, tags, lists, topics, score, dates (relative/absolute, anniversaries), journey state.
-- Live count: debounced (400 ms), cached by AST hash; > 1M contacts → estimate first, exact count async.
-- Membership is evaluated on demand (send/preview) and incrementally for journey "entered/exited segment" triggers.
-- Segments unused 90 days are flagged (not disabled).
+- **Structure:**
+  - **Zoho** `[ZOHO_PARITY]`: criteria arranged in up to 10 groups, joined by AND/OR, with at most 50 criteria.
+  - **Ours** `[OUR_IMPROVEMENT]`: an AST with AND/OR/NOT at any node, nested up to depth 5, with up to 100 conditions.
+- Save a segment as a list `[ZOHO_PARITY]`.
+- **Unused segments:**
+  - **Zoho** `[ZOHO_PARITY]`: a segment unused for 60 days becomes inactive.
+  - **Ours** `[OUR_IMPROVEMENT]`: flagged after 90 days, never disabled.
+- Live counts are debounced and cached, with estimates first above 1 M contacts `[OUR_ORIGINAL_DESIGN]`.
 
 ## M7. Topics
 
-- Hierarchy: Brand → Category → Topic. Defaults: Product Updates, Promotions, Newsletter, Events, Educational,
-  Transactional (transactional is exempt from marketing opt-out but never from suppression).
-- Per-contact, per-channel topic subscription. Hosted preference center (brandable) lets contacts manage topics and
-  channels; every change is a consent event.
-- A campaign targets one or more topics (Zoho: exactly one); a contact is eligible if subscribed to **any** of them.
+- The hierarchy Brand → Category → Topic, a preference center, and per-topic unsubscribe `[ZOHO_PARITY]`.
+- Topics per campaign:
+  - **Zoho:** exactly one topic per campaign `[ZOHO_PARITY]`.
+  - **Ours:** one or more topics, and a contact qualifies through any of them `[OUR_IMPROVEMENT]`.
+- The Transactional topic is exempt from marketing opt-out but never from suppression `[OUR_ORIGINAL_DESIGN]`.
 
-## M8. Consent
+## M8. Consent *(D3)*
 
-`consent_records`: contact, channel, topic (nullable = all), status (granted/withdrawn/pending), lawful basis
-(consent, contract, legal obligation, vital interest, public task, legitimate interest), source (form, import, API,
-preference center, admin, keyword), consent text version, captured_at, withdrawn_at, evidence (IP, user agent,
-form ID + version, page URL, double opt-in confirmation timestamp). Records are append-only.
+Consent is **immutable, auditable evidence** with a **configurable retention policy**. There is no hard-coded
+"keep forever" rule, and deleting a contact never silently deletes consent evidence.
 
-**Double opt-in:** pending state, confirmation link valid 7 days, one reminder after 48 h, auto-expire with reason.
-**Channel rules:** SMS honours STOP/UNSUBSCRIBE/START keywords; WhatsApp requires explicit opt-in.
+### 8.1 Consent event (append-only) `[OUR_IMPROVEMENT]`
 
-### Eligibility Engine (shared by every send)
+**Zoho:** a lawful basis per topic in GDPR mode. Its evidence model is not documented `[NOT_VERIFIED]`.
 
-Evaluated per contact per message, in order, short-circuiting with a reason code:
+| Field | Meaning |
+|---|---|
+| `id`, `org_id`, `workspace_id` | Owner: the workspace that holds the contact. |
+| `contact_id` | Nullable after erasure (see 8.3). |
+| `subject_fingerprint` | Keyed hash (HMAC) of the normalized address. Lets evidence outlive erasure without storing PII. |
+| `channel` | email, sms or whatsapp. |
+| `topic_id` | Null means every topic on that channel. |
+| `event` | granted, withdrawn, confirmed (double opt-in), expired or reaffirmed. |
+| `previous_state` / `new_state` | none, pending, granted or withdrawn. |
+| `lawful_basis` | consent, contract, legal_obligation, vital_interests, public_task or legitimate_interests. Required in GDPR mode. |
+| `source` | form, import, api, preference_center, admin, sms_keyword, whatsapp_optin or double_opt_in. |
+| `actor_type` / `actor_id` | contact, user, api_key or system. |
+| `occurred_at` / `recorded_at` | When it happened, and when we stored it. |
+| `ip_address`, `user_agent` | When captured from the contact's own browser or device. |
+| `consent_text_version_id` | The exact wording the contact saw (versioned consent text). |
+| `evidence` | Reference metadata: form id + version, page URL, import file id + row, API request id, double-opt-in confirmation id. |
+| `correlation_id` | Ties the record to the request or job that created it. |
 
-1. `NOT_MARKETING` — subscription type ≠ marketing (skipped for transactional)
-2. `UNSUBSCRIBED`
-3. `NO_ADDRESS` / `INVALID_ADDRESS` for the channel
-4. `SUPPRESSED` (address, domain or phone)
-5. `NO_CHANNEL_CONSENT`
-6. `NO_TOPIC_SUBSCRIPTION`
-7. `FREQUENCY_CAP` (per-channel daily/weekly/monthly + min interval; exemptions per campaign/journey need approval)
-8. `QUIET_HOURS` (SMS/WhatsApp in recipient local time → deferred, not dropped)
-9. `DUPLICATE` within the same send
-10. `UNENGAGED` (optional exclusion: no engagement in N days)
+The current state per (contact, channel, topic) is a **projection**, updated in the same transaction. The events
+are never updated.
 
-The pre-send review shows counts per reason; exclusions are stored per delivery and visible on the contact timeline.
+### 8.2 Retention policy `[OUR_ORIGINAL_DESIGN]`
+
+Each organization has a policy, with optional per-workspace overrides:
+
+| Setting | Default | Notes |
+|---|---|---|
+| `retain_after_withdrawal` | `P6Y` (6 years) | Proposed default only. The legal basis is the organization's decision. Configurable ISO-8601 duration or `indefinite`. |
+| `retain_after_contact_erasure` | `P6Y` | Evidence is kept pseudonymized (8.3). |
+| `pending_double_opt_in_expiry` | `P7D` | Unconfirmed pending consent expires, with reason `expired`. |
+
+- **Who can change it:** `consent.manage` + `security.manage`.
+- **Audit:** every change to the policy is audited.
+- **Purge job:** deletes only events past their retention, writes a tombstone count to the audit log, and never touches events still inside retention.
+
+### 8.3 Contact deletion and erasure `[OUR_ORIGINAL_DESIGN]`
+
+- **Soft delete:** consent events are untouched.
+- **GDPR erasure:**
+  - PII is removed from the contact.
+  - Consent events keep `subject_fingerprint`, channel, topic, timestamps, basis, source and evidence references; `contact_id` is set to null.
+  - Events are deleted only by the retention purge above.
+
+### 8.4 Eligibility Engine
+
+Checks run in order, and the first failure is the recorded reason.
+
+**Exclusions `[ZOHO_PARITY]`:**
+- `NOT_MARKETING`
+- `UNSUBSCRIBED`
+- `SUPPRESSED` (bounced or complained)
+- `NO_TOPIC_SUBSCRIPTION`
+- `FREQUENCY_CAP`
+- `UNENGAGED` (optional)
+
+**Our additions:**
+- `NO_ADDRESS` / `INVALID_ADDRESS` and `NO_CHANNEL_CONSENT` `[OUR_ORIGINAL_DESIGN]`
+- `QUIET_HOURS`: deferred, not dropped `[OUR_ORIGINAL_DESIGN]`
+- `DUPLICATE` `[ZOHO_PARITY]` (counted once)
+
+Showing the order and the reason per contact is `[OUR_IMPROVEMENT]`.
+
+**Frequency caps:**
+- Per channel, daily/weekly/monthly limits plus a minimum interval `[ZOHO_PARITY]`.
+- Exemptions require approval `[OUR_IMPROVEMENT]`.
+
+**Double opt-in:**
+- Double opt-in itself `[ZOHO_PARITY]`.
+- 7-day expiry and a 48 h reminder `[OUR_ORIGINAL_DESIGN]` (Zoho's expiry is `[NOT_VERIFIED]`).
 
 ## M9. Contact scoring
 
-- Rules: event type (+ optional conditions, e.g. link URL contains, form ID) → points, with optional caps per
-  period. Defaults: email open +5, click +10, WhatsApp read +5 / click +12 / reply +15, form submit +20,
-  purchase +50, unsubscribe −30, soft bounce −5, hard bounce −50, spam complaint −100.
-- Scores: engagement (per channel), fit (attribute rules), total = engagement + fit, clamped −999…999.
-- Decay: per rule, a half-life or relevance window (default 90 days). Implemented by recomputing affected contacts
-  nightly from the event log; real-time increments in between.
-- Event-driven: score changes emit `contact.score_changed` (journey trigger, timeline, webhook).
-- Configuring scoring requires `scoring.manage`.
+- Engagement score per channel plus a fit score; the total is clamped to −999…999; decay over a relevance window `[ZOHO_PARITY]`.
+
+**Default points.** Each default carries its source:
+
+| Event | Default | Source |
+|---|---|---|
+| Email opened | +5 | brief |
+| Email clicked | +10 | brief |
+| WhatsApp read | +5 | Zoho |
+| WhatsApp clicked | +12 | brief (**Zoho: +10**) |
+| WhatsApp replied | +15 | Zoho |
+| WhatsApp failed | −100 | Zoho |
+| SMS clicked | +10 | Zoho |
+| Form submitted | +20 | brief |
+| Purchase | +50 | brief |
+| Unsubscribed | −30 | brief |
+| Email soft bounce | **−20** | Zoho (*corrected; the spec previously said −5, which had no source*) |
+| Email hard bounce | −50 | Zoho |
+| Spam complaint | −100 | brief and Zoho agree |
+
+- Every value is a configurable default.
+- Decay per rule `[OUR_IMPROVEMENT]`. **Zoho:** a single relevance window.
+- Only admins can configure scoring `[ZOHO_PARITY]` (permission `scoring.manage`).
 
 ## M10. Campaign management
 
-Types: **Email** (regular, A/B, RSS, follow-up), **SMS**, **WhatsApp**. Plain-text is an email content mode, not a
-type.
+**Types:**
+- Email (regular, A/B, RSS, follow-up), SMS and WhatsApp `[ZOHO_PARITY]`.
+- Plain text is an email content mode `[OUR_ORIGINAL_DESIGN]`.
 
-### State machine
+**States:**
+- **Zoho** `[ZOHO_PARITY]`: drafts, scheduled, inprogress, sent, stopped, canceled, tobereviewed, reviewed, paused, intesting.
+- **Ours** `[OUR_IMPROVEMENT]`: a 13-state machine with server-side transitions (`apps/api/src/modules/campaigns/domain/campaign-state.ts`). The UI receives `allowedActions` and never computes transitions.
 
-```
-draft ──configure──▶ configured ──content──▶ content_ready ──validate──▶ validated
-  ▲                                                                     │
-  └──────────────── edit (invalidates validation/approval) ─────────────┤
-                                                       (approval policy)▼
-                                     pending_approval ──approve──▶ approved/validated
-validated ──schedule──▶ scheduled ──(time)──▶ queued ──▶ sending ──▶ completed
-scheduled ──cancel──▶ draft            sending ──pause──▶ paused ──resume──▶ sending
-sending/paused ──stop──▶ stopped (partial report kept)
-sending ──auto-pause (bounce > 5% or complaints > 0.1%)──▶ paused_by_system ──review──▶ sending | stopped
-A/B: sending(test) ──▶ awaiting_winner ──winner──▶ sending(remainder) ──▶ completed
-any terminal state ──clone──▶ new draft
-```
+**Actions** `[ZOHO_PARITY]`:
+- Clone from a draft or a sent campaign.
+- Cancel or reschedule before the send time.
+- Pause while in progress.
 
-Rules:
-- Deletion allowed in draft, stopped, completed (reports archived, not deleted, for 90 days). Zoho deletes reports.
-- A/B campaigns **can** be paused/stopped (Zoho cannot).
-- Validation checks: sender verified + domain authenticated (SPF/DKIM aligned), ≥1 audience, ≥1 topic, subject
-  present, unsubscribe link present (marketing), links reachable, images ≤ limits, merge tags resolvable with
-  fallbacks, spam/content score with explained issues, audience count within plan, SMS segment count, WhatsApp
-  template approved.
-- Recipients: up to 25 lists/segments + exclusion lists/segments.
-- Scheduling: now; at time (tz); recipient time zone (fallback to org tz, optional "skip if window passed");
-  optimal send time (per-contact model, configurable window up to 24 h, shows coverage); batches (N batches every
-  X minutes, or throttle per hour).
-- Follow-ups: target unopened / opened / clicked / opened-not-clicked / not-clicked-link-X after a delay.
-- Test sends: up to 10 addresses, rendered as a chosen sample contact.
-- Pre-send review page: audience breakdown by eligibility reason, rendered previews (desktop/mobile/dark), checks
-  list, estimated send duration.
+**Deletion:**
+- **Zoho:** deleting a campaign deletes its reports.
+- **Ours** `[OUR_IMPROVEMENT]`: reports are archived for 90 days.
 
-### A/B testing (improved)
+**A/B tests:**
+- **Zoho:** cannot be stopped.
+- **Ours** `[OUR_IMPROVEMENT]`: can be paused and stopped.
 
-Variants 2–5. Variable: subject, preheader, sender, content, or send time. Test size: % or absolute count (total
-test share ≤ 60%). Winner metric: open (human opens only), click, CTOR, conversion, revenue. Winner: automatic
-after duration with significance check (two-proportion z-test, 95% default); if inconclusive → configurable
-fallback (best observed / variant A / manual). Minimum test group 100 recipients per variant for automatic mode.
+**Bounce threshold:**
+- **Zoho** `[ZOHO_PARITY]`: above 5 % the campaign auto-pauses for 24 h; a second breach cancels it.
+- **Ours** `[OUR_IMPROVEMENT]`: the threshold is configurable, and a breach sets `paused_by_system` for review.
 
----
+**Complaint threshold:**
+- **Zoho** `[ZOHO_PARITY]`: above 0.1 % the campaign is stopped/cancelled.
+- **Ours** `[OUR_IMPROVEMENT]`: `paused_by_system` with an explanation.
+
+**Pre-send review:**
+- **Zoho:** a manual review of about 30 min.
+- **Ours** `[OUR_IMPROVEMENT]`: automated validation with explained findings.
+
+**Required to send:**
+- A verified sender, at least one audience and a topic `[ZOHO_PARITY]`.
+- A resolvable merge-tag fallback and an unsubscribe link `[ZOHO_PARITY]`.
+
+**Recipients:**
+- **Zoho** `[ZOHO_PARITY]`: up to 10 lists or segments.
+- **Ours** `[OUR_IMPROVEMENT]` (proposed): up to 25.
+
+**Test sends:**
+- **Zoho** `[ZOHO_PARITY]`: up to 5 addresses (2.0).
+- **Ours** `[OUR_IMPROVEMENT]` (proposed): up to 10.
+
+**Scheduling:**
+- Send now, at a set time, in recipient time zone, at optimal time (24 h window), or in batches `[ZOHO_PARITY]`.
+- "Skip if the window has passed", a configurable optimal window and a coverage indicator `[OUR_IMPROVEMENT]`.
+
+**Follow-ups:** to unopened, opened, clicked, or opened-but-not-clicked recipients `[ZOHO_PARITY]`.
+
+**A/B testing:**
+- **Zoho** `[ZOHO_PARITY]`:
+  - 2 variants
+  - test share at most 60 %
+  - winner by open rate, click rate or manual choice
+  - a tie extends the test by 30 min
+- **Ours** `[OUR_IMPROVEMENT]`:
+  - 2–5 variants
+  - test size as a percentage or an absolute count
+  - winners by human opens, clicks, CTOR, conversions or revenue
+  - a two-proportion significance test at 95 %
+  - a configurable fallback when the result is inconclusive
+  - at least 100 recipients per variant in automatic mode (proposed)
 
 ## M11. Email builder, templates, assets
 
-- Editors: drag-and-drop (blocks: section, columns 1–4, text, image, button, divider, spacer, social, video
-  thumbnail-link, HTML, product, coupon, countdown, footer), HTML code editor with live preview, plain text
-  (auto-generated from HTML, editable).
-- Document model: JSON block tree → rendered to MJML-equivalent responsive HTML server-side. Dark-mode and mobile
-  previews; per-block hide on mobile/desktop.
-- Merge tags: `{{ contact.first_name | default: "there" }}` (Liquid-subset, sandboxed, no loops over unbounded data).
-  Zoho syntax `$[FNAME|x]$` accepted on HTML import and converted.
-- Dynamic content: per-block visibility rules using the segment condition AST.
-- Brand kit: logos, colours, fonts, footer, social links; saved sections; template versioning with diff + restore.
-- Template categories: system, organization, saved; locking for brand-controlled regions.
-- Assets: images ≤ 5 MB (auto-optimized, CDN), files ≤ 20 MB; folders, tags, usage tracking ("used in 3 campaigns").
+- **Editors:**
+  - Drag-and-drop, HTML and plain text `[ZOHO_PARITY]`.
+  - Saved sections, and separate desktop/mobile design `[ZOHO_PARITY]`.
+  - Dynamic content rules per block `[ZOHO_PARITY]`.
+- **Merge tags:**
+  - **Zoho** `[ZOHO_PARITY]`: syntax `$[FNAME|fallback]$`.
+  - **Ours** `[OUR_IMPROVEMENT]`: a sandboxed Liquid subset; Zoho syntax converts on import.
+- Template versioning with diff, and a brand kit `[OUR_IMPROVEMENT]`. Zoho's template versioning is `[NOT_VERIFIED]`.
+- **Asset size limits:**
+  - **Zoho** `[ZOHO_PARITY]`: images 1 MB, files 10 MB.
+  - **Ours** `[OUR_IMPROVEMENT]` (proposed): 5 MB and 20 MB.
 
 ## M12. Messaging engine
 
-As described in `architecture.md` §7. Additional rules:
-- Sending is idempotent per (message, contact). Retries with exponential backoff for transient provider errors.
-- Soft bounces retried up to 72 h; 5 consecutive soft bounces across sends → treated as hard bounce.
-- Hard bounce / complaint → suppression immediately.
-- Tracking: per-link wrapped URLs (signed), open pixel; machine opens (Apple MPP, scanners) flagged and excluded from
-  "human opens". UTM auto-tagging configurable per org/campaign.
-- List-Unsubscribe + List-Unsubscribe-Post (RFC 8058 one-click) on every marketing email.
+- Idempotent delivery per (message, contact) `[OUR_ORIGINAL_DESIGN]`.
+- **Soft bounces:**
+  - **Zoho** `[ZOHO_PARITY]`: retried for up to 5 days; about 7 soft bounces become a hard bounce.
+  - **Ours** `[OUR_ORIGINAL_DESIGN]` (proposed): retries for 72 h; 5 consecutive soft bounces count as a hard bounce. Configurable.
+- A hard bounce or complaint suppresses the address immediately `[ZOHO_PARITY]`.
+- Bot opens are reported separately `[ZOHO_PARITY]`.
+- Machine-open detection for Apple Mail Privacy Protection and security scanners `[OUR_IMPROVEMENT]`. Zoho's MPP handling is `[NOT_VERIFIED]`.
+- One-click unsubscribe headers (RFC 8058) `[OUR_ORIGINAL_DESIGN]`, as Gmail and Yahoo require of bulk senders.
+- Inbound provider callbacks are verified against the raw body, and the tenant is resolved from our routing table, never from the payload `[OUR_ORIGINAL_DESIGN]`. Implemented in Phase 4 as the `ChannelAdapter.verifyCallback` contract plus `app.resolve_provider_message`.
 
-## M13. Journeys / workflows
+## M13. Journeys
 
-- Triggers: list joined/left, segment entered/exited, form submitted, tag added/removed, field changed, date field
-  (with offset, yearly), message event (any channel), score threshold crossed, custom event/API, purchase,
-  cart abandoned, recurring schedule. Multiple triggers per journey (OR).
-- Flow nodes: wait (duration / until date / until weekday-time window), wait-for-event with timeout, if/else (AST),
-  multi-way split, random % split, A/B, merge, goal (contact jumps to goal when met, from anywhere), exit.
-- Action nodes: send email/SMS/WhatsApp, add/remove list, tag, topic, update field, update score, change
-  subscription type, internal notification, webhook (with response branching + retries), CRM create/update,
-  move to another journey.
-- Entry rules: re-entry off / always / after cooldown; max entries per contact; "include contacts already matching"
-  at launch.
-- States: `draft → active → paused → active`, `active → draining (no new entries, in-flight continue) → archived`.
-  Pausing offers: freeze in place, or drain. Each publish creates an immutable version; in-flight contacts stay on
-  their version unless migrated with an explicit node mapping (Zoho strands them).
-- Launch validation: every node configured and connected, referenced assets exist, sends have approved content.
-- **Debugger:** per contact, the path taken with timestamps and evaluated condition values; per node, counts
-  (entered, waiting, completed, failed) and error samples.
-- Dependency safety: deleting a list/field/template used by an active journey is blocked with a list of users.
+- **Triggers** `[ZOHO_PARITY]`:
+  - list, segment, form, email/WhatsApp action, date, tag, score
+  - open trigger (API), cart, recurring schedule
+- **Triggers we add** `[OUR_ORIGINAL_DESIGN]`: field changed and custom event.
+- **Flow and action components** `[ZOHO_PARITY]`:
+  - activity checks, if/else, multi-split, random split, merge
+  - delay, wait-for-condition with timeout
+  - list/tag/field/score/topic actions, webhook, internal notification, move to another workflow
+- Goal node `[NOT_VERIFIED]` for Zoho 3.0 (2.0 had goals). Ours is a planned feature.
+- **Lifecycle:**
+  - **Zoho** `[ZOHO_PARITY]`: Draft → Active ⇄ Paused. Triggers are locked after launch.
+  - **Ours** `[OUR_IMPROVEMENT]`: adds a draining state and immutable versions, with explicit migration of in-flight contacts. **Zoho:** deleting a step strands the contacts in it.
+- **Re-entry:**
+  - **Zoho** `[ZOHO_PARITY]`: on or off.
+  - **Ours** `[OUR_IMPROVEMENT]`: a cooldown and a maximum number of entries.
+- A per-contact debugger `[OUR_IMPROVEMENT]`.
+- Tenant-scoped job execution `[OUR_ORIGINAL_DESIGN]`: implemented in Phase 4 as `defineTenantJob`.
 
 ## M14. Analytics and events
 
-- Metric definitions (fixed, documented in-product): delivery rate = delivered/sent; open rate = unique human opens /
-  delivered; click rate = unique clicks / delivered; CTOR = unique clicks / unique opens; bounce, unsubscribe,
-  complaint rates over delivered.
-- Reports: campaign (overview, link click map, heatmap overlay, device/client/OS, geography, time-of-day,
-  per-domain/ISP deliverability, A/B variants), journey (funnel per node), contact, list growth, topic subscriptions,
-  channel comparisons, revenue attribution (last-click within configurable window).
-- Exports CSV/XLSX; scheduled email reports.
+- **Formulas** `[ZOHO_PARITY]` (3.0):
+  - open rate = opens / delivered
+  - click rate = clicks / delivered
+  - CTOR = clicks / opens
+- Unique and total counts are both reported `[ZOHO_PARITY]`.
+- **We add** `[OUR_IMPROVEMENT]`:
+  - human vs. machine opens
+  - breakdown by mailbox provider (ISP)
+  - revenue attribution
+  - time-of-day heatmaps
+- Event taxonomy and envelope: `docs/events.md` `[OUR_ORIGINAL_DESIGN]`.
 
 ## M15. Deliverability
 
-- Sender identities (verified by link) and sending domains (SPF include, DKIM 2048-bit, DMARC presence + policy,
-  return-path/custom bounce domain, tracking domain CNAME). Free-mail domains rejected as senders.
-- DNS checks: periodic re-verification; alerts on regression.
-- DMARC aggregate report ingestion (rua mailbox) → dashboard of pass/fail by source.
-- Reputation dashboard: bounce, complaint, block rates by ISP; per-campaign health; Google Postmaster/Yahoo
-  feedback loop ingestion where available.
-- Automatic protections: configurable auto-pause thresholds (default bounce 5%, complaint 0.1%); new-domain
-  warm-up schedules; list-quality scoring on import (role, disposable, syntax, MX check).
-- Pre-send content score with explained findings.
+- SPF and DKIM verification, verified sender addresses, and rejection of free-mail domains as senders `[ZOHO_PARITY]`.
+- DMARC report ingestion, warm-up schedules, configurable thresholds and a pre-send content score `[OUR_IMPROVEMENT]`. **Zoho:** DMARC is checked as a precondition only.
 
 ## M16. SMS
 
-- Providers via adapter (Twilio first). Sender ID / number registration status (DLT India, 10DLC US, toll-free).
-- GSM-7 vs. UCS-2 detection, segment counter and cost estimate in the editor; multiple links allowed (shortened,
-  tracked).
-- STOP/START/HELP keywords handled automatically per locale; opt-out text appended for marketing.
-- Quiet hours by recipient time zone (default 21:00–08:00) — deferred not dropped.
-- Two-way inbound messages stored on the timeline; transactional SMS supported (topic = Transactional).
+- **Zoho** `[ZOHO_PARITY]`:
+  - DLT (India) and 10DLC (US) registration
+  - splitting at 160 GSM / 70 Unicode characters
+  - an opt-out link in workflows
+- **Ours** `[OUR_IMPROVEMENT]`:
+  - multiple tracked links (**Zoho:** one link)
+  - STOP/START/HELP keywords (Zoho: `[NOT_VERIFIED]`)
+  - transactional SMS (**Zoho:** promotional only)
+  - quiet hours, defaulting to 21:00–08:00 local time
+  - a two-way inbox
 
 ## M17. WhatsApp
 
-- WhatsApp Cloud API adapter. Business account + phone number connection, quality rating and messaging tier shown.
-- Templates: category (marketing / utility / authentication), header (text/image/video/document), body
-  (variables), footer, buttons (quick reply, URL, call); Meta approval status synced via webhook; rejection reasons
-  shown.
-- Template messages outside the 24 h service window; free-form only within it. Inbound messages and button replies
-  are events (journey triggers + timeline).
-- Opt-in enforced by the eligibility engine.
+- Meta template approval and component limits `[ZOHO_PARITY]`:
+  - header 60 characters
+  - body 800 characters with up to 10 variables
+  - footer 60 characters
+  - up to 10 buttons
+- **We add** `[OUR_IMPROVEMENT]`:
+  - handling of the 24 h service window (a Meta platform rule)
+  - visibility of quality rating and messaging tier
+  - opt-in enforced by the eligibility engine
 
 ## M18. Integrations, webhooks, public API
 
-- **REST API v1:** resource-oriented JSON (`/v1/contacts`, `/v1/lists`, `/v1/segments`, `/v1/campaigns`,
-  `/v1/journeys`, `/v1/templates`, `/v1/events`, `/v1/webhooks`…), cursor pagination, idempotency keys, bulk
-  endpoints (up to 10k contacts/request, async job), OpenAPI 3.1 spec, generated TS SDK.
-- Auth: org API keys (scoped, hashed, prefix-identifiable, last-used shown) and OAuth 2.0 for third-party apps.
-- Rate limits: token bucket per key (default 100 req/s burst, 6000/min), `RateLimit-*` headers, 429 with
-  `Retry-After` — no punitive lockouts.
-- **Outbound webhooks:** any event type, HMAC-SHA256 signed with timestamp, retries with backoff for 24 h,
-  delivery log with replay, auto-disable after sustained failure with alert.
-- **Inbound:** custom events API, form endpoints, provider callbacks.
-- Integrations framework: connector interface (auth, field mapping, sync direction, schedule, conflict policy).
-  First connectors: HubSpot/Salesforce/Zoho CRM (contacts + field sync), Shopify (orders, carts, products),
-  Zapier-style generic webhook.
+- **REST API:**
+  - **Zoho** `[ZOHO_PARITY]`: verb-style endpoints.
+  - **Ours** `[OUR_IMPROVEMENT]`: resource-oriented JSON, OpenAPI 3.1, cursor pagination, idempotency keys.
+  - Phase 4 ships the browser API with these properties; the public API-key surface comes in Phase 15.
+- **Rate limits:**
+  - **Zoho** `[ZOHO_PARITY]`: 500 calls / 5 min, then a 30 min lockout.
+  - **Ours** `[OUR_IMPROVEMENT]`: token buckets with `Retry-After` and no punitive lockouts.
+- Signed, retried webhooks with replay `[OUR_IMPROVEMENT]`. Zoho's signing and retries are `[NOT_VERIFIED]`.
 
-## M19. AI
+## M19. AI `[OUR_IMPROVEMENT]`
 
-Provider-agnostic AI service (default: Anthropic Claude). All AI outputs are suggestions requiring user acceptance;
-prompts never include data from other tenants; usage metered per org.
-- Content: subject lines (with predicted performance), body drafts in brand voice, rewrite/shorten/translate,
-  SMS/WhatsApp variants within length limits, alt text.
-- Audience: suggested segments from natural language ("customers who bought twice but haven't opened in 60 days" →
-  AST), lookalike criteria, churn-risk segments.
-- Optimization: send-time model, A/B hypothesis suggestions, dashboard insight narratives, deliverability
-  diagnosis ("why did Gmail bounces spike?").
+- **Zoho:** Zia content generation (3.0).
+- **Scope** *(brief)*:
+  - content
+  - audience suggestions
+  - optimization
+  - insight narratives
+- **Rules:** suggestions only; no data crosses tenants.
 
 ## M20. Forms
 
-Embedded, pop-up (timed/exit-intent/scroll), hosted landing page. Field mapping to contact/custom fields, topic
-checkboxes, consent text versioning, double opt-in, reCAPTCHA/Turnstile + honeypot, rate limiting per IP,
-submission analytics (views, conversions).
+- Signup and pop-up forms, CAPTCHA via integration, double opt-in `[ZOHO_PARITY]`.
+- Exit-intent and scroll triggers, Turnstile, honeypot, consent-text versioning `[OUR_IMPROVEMENT]`.
 
-## M21. Administration, usage, billing readiness
+## M21. Administration, usage, billing readiness `[OUR_ORIGINAL_DESIGN]` *(brief)*
 
-- Usage counters: contacts (marketing), emails/SMS/WhatsApp sent, AI tokens, API calls, storage — per org per
-  period; plan limits enforced in services with soft (warn) and hard (block) thresholds.
-- Plans are data (limits + feature flags), not code. Billing provider integration (Stripe) is a later adapter.
-- Admin console: users, roles, approval policies, API keys, webhooks, domains, integrations, security settings,
-  audit log search/export, data export/deletion (GDPR DSAR).
+- Plans are data, not code.
+- Usage counters per organization.
+- An admin console.
+- Data export and deletion requests (GDPR DSAR).
+- **Phase 4 ships:** members, roles, security (sessions) and the audit log with export.
 
 ---
 
-## Non-functional requirements
+## Non-functional requirements `[OUR_ORIGINAL_DESIGN]`
 
-| Area | Target |
+| Area | Target (proposed) |
 |---|---|
-| UI | p75 LCP < 2.0 s; interactions < 100 ms; fully responsive ≥ 360 px; WCAG 2.2 AA |
-| API | p95 < 200 ms for CRUD; list endpoints paginated |
-| Sending | ≥ 1M emails/hour per cluster horizontally; per-org fairness |
-| Events | ingest ≥ 5k events/s; timeline visible < 5 s after event |
-| Availability | 99.9% API; sends survive worker restarts (durable queues, idempotent jobs) |
-| Security | OWASP ASVS L2; tenant isolation tested automatically on every endpoint |
-| Data | backups with PITR; GDPR export/delete within 30 days |
+| UI | p75 LCP < 2.0 s; responsive ≥ 360 px; WCAG 2.2 AA |
+| API | p95 < 200 ms CRUD |
+| Sending | ≥ 1 M emails/hour/cluster |
+| Events | ≥ 5 k/s ingest |
+| Availability | 99.9 % API |
+| Security | OWASP ASVS L2; isolation tested on every route (Phase 4: `apps/api/test/routes.test.ts`) |
 
 ## Build plan
 
-1 Spec ✅ → 2 Architecture ✅ → 3 Monorepo → 4 Auth + Org + RBAC → 5 Contacts + Audience → 6 Campaigns →
-7 Email builder → 8 Templates + Assets → 9 Messaging engine → 10 Journeys → 11 Analytics + Events →
-12 Deliverability → 13 SMS → 14 WhatsApp → 15 Integrations/Webhooks/API → 16 AI → 17 Performance + Security →
-18 Testing → 19 Deployment.
+1 Spec ✅ → 2 Architecture ✅ → 3 Monorepo ✅ → Foundation audit + fixes ✅ → **4 Identity + Org + Workspace + RBAC ✅** →
+5 Contacts + Audience → 6 Campaigns → 7 Email builder → 8 Templates + Assets → 9 Messaging engine → 10 Journeys →
+11 Analytics + Events → 12 Deliverability → 13 SMS → 14 WhatsApp → 15 Integrations/Webhooks/API → 16 AI →
+17 Performance + Security → 18 Testing → 19 Deployment.

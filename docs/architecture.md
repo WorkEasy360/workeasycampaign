@@ -1,185 +1,186 @@
 # Workeasy Campaign — Architecture
 
-Status: v0.1 (step 2 of the build plan). Will be revised after specification reconciliation (`docs/spec.md`).
+Status: as built through Phase 4. Companion documents:
 
-## 1. Guiding principle
+| Document | Covers |
+|---|---|
+| `tenancy.md` | Ownership and isolation |
+| `identity.md` | Authentication and sessions |
+| `events.md` | Event model |
+| `security.md` | Controls and privileges |
+| `spec.md` | Product rules with provenance |
 
-The platform is modelled around the customer, not around email:
+## 1. Principle
 
 ```
 Customer → Identity → Audience → Consent → Journey → Message → Delivery → Engagement → Event → Analytics → Optimization
 ```
 
-Email, SMS and WhatsApp are **delivery channels** plugged into one communication pipeline. No business rule
-(eligibility, consent, scheduling, throttling, tracking, scoring, reporting) may live inside a channel.
+Email, SMS and WhatsApp are delivery channels behind one adapter contract. No business rule lives in a channel.
 
-## 2. Stack
+## 2. Stack (pinned versions: `docs/audit/foundation-audit.md` §1)
 
-| Concern | Choice | Why |
-|---|---|---|
-| Language | TypeScript everywhere | One type system from DB to UI; shared validation schemas |
-| Monorepo | pnpm workspaces + Turborepo | Fast incremental builds, shared packages |
-| Web app | Next.js (App Router), React, Tailwind, shadcn/ui, TanStack Query | Mature, responsive, server components for fast first paint |
-| API | NestJS (Fastify adapter) | Modules/DI suit a large domain; guards/interceptors for auth + tenancy |
-| Workers | NestJS standalone apps consuming BullMQ queues | Same DI/container as API, independently scalable |
-| Database | PostgreSQL 16 via Prisma | Relational core, JSONB for flexible attributes, RLS for tenant isolation |
-| Queue / cache | Redis 7 + BullMQ | Delayed jobs, rate limiting, retries, flows |
-| Validation | Zod (shared package) | Same schemas for API DTOs, forms and SDK |
-| Analytics store | Postgres partitioned event table + rollup tables (phase 1); ClickHouse-ready interface (phase 2) | Avoid premature infra; keep a seam to swap |
-| Object storage | S3-compatible (MinIO locally) | Assets, imports, exports |
-| Local mail sink | Mailpit | Inspect sent mail in development |
+| Concern | Choice |
+|---|---|
+| Runtime | Node 24 LTS, TypeScript 6.0, ESM everywhere |
+| Web | Next.js 16 (App Router), React 19.3, Tailwind 4, TanStack Query |
+| API | NestJS 11 on Fastify 5 |
+| Worker | NestJS standalone + BullMQ 5 (ioredis 5) |
+| Database | PostgreSQL 16 via Prisma 7.10 (driver adapter `pg`) with forced row-level security |
+| Contracts | Zod 4 schemas in `packages/shared`, used by both API and UI |
+| Tests | Vitest 5 (unit / database / API / worker / components), Playwright (E2E) |
+| Tasks | `pnpm -r`. Turborepo removed because its Windows binary needs the MSVC runtime. |
 
-## 3. Repository layout
+## 3. Repository and boundaries
 
 ```
-apps/
-  web/        Next.js frontend
-  api/        NestJS HTTP API (REST, /v1 public API, webhooks ingress)
-  worker/     NestJS workers (send, events, scoring, segments, journeys, imports)
-packages/
-  db/         Prisma schema, migrations, tenant-scoped client, seed
-  shared/     Zod schemas, DTO types, permission catalogue, enums, utilities
-  channels/   Channel adapter interface + email/sms/whatsapp providers
-  config/     Shared tsconfig / eslint presets
-docs/         Specification, architecture, ADRs
+apps/web        Next.js UI. Talks to the API over HTTP only (/api/* rewrite → API).
+apps/api        HTTP API: modules/<context>/{domain,application,infrastructure,http}
+apps/worker     Background jobs (tenant-job wrapper; queue processors from Phase 9)
+apps/e2e        Playwright end-to-end suite
+packages/shared Contracts only: permission catalogue, enums, Zod DTOs, response types (browser-safe; no Node types)
+packages/db     Prisma schema + migrations; exports context-bound access only
+                  @workeasy/db          createDatabase() → withTenant / asUser / system
+                  @workeasy/db/identity identity-schema store (local identity provider only)
+                  @workeasy/db/testing  test helpers (tests only)
+packages/channels ChannelAdapter contract + adapters
+packages/config  shared tsconfig
 ```
 
-## 4. Multi-tenancy and isolation
+### Boundary rules (enforced by `pnpm lint:boundaries` = manifest check + dependency-cruiser)
 
-Two independent layers — either alone must prevent cross-tenant access:
+| Rule | Detail |
+|---|---|
+| No server packages in the browser | `apps/web` cannot import `@workeasy/db`, `@workeasy/channels`, the API or the worker, Prisma, `pg`, Redis/BullMQ, argon2, nodemailer, NestJS or Fastify. It cannot import undeclared packages, and it cannot declare forbidden ones. |
+| `packages/shared` is contracts only | No server packages and no Node globals. |
+| Generated Prisma client is private | Only `packages/db` may touch it. |
+| Identity store is local-provider only | `@workeasy/db/identity` only from `apps/api/src/modules/identity/infrastructure/local`. |
+| Test helpers stay in tests | `@workeasy/db/testing` only from tests and db scripts. |
+| Domain code is pure | `modules/*/domain` imports no HTTP, persistence or framework code. |
+| API and worker are independent | They never import each other. |
+| No cycles | |
 
-1. **Application layer.** Every request resolves an `AuthContext { userId, orgId, permissions }`. Repositories obtain
-   a Prisma client via `db.forTenant(orgId)`; there is no un-scoped repository API for tenant data.
-2. **Database layer.** Every tenant table has `org_id` and a PostgreSQL Row-Level Security policy
-   `org_id = current_setting('app.org_id')::uuid`. The tenant client runs each operation inside a transaction that
-   first executes `set_config('app.org_id', $1, true)`. The application DB role is not a table owner and cannot bypass
-   RLS. A separate privileged role is used only by migrations and system jobs.
-
-Composite indexes lead with `org_id`. IDs are UUIDv7 (time-ordered, index-friendly, non-guessable across tenants).
-
-## 5. Identity, auth and RBAC
-
-- Passwords: Argon2id. Breached/weak password checks at signup and change.
-- Sessions: opaque random token in an `HttpOnly; Secure; SameSite=Lax` cookie; only the SHA-256 hash is stored
-  (`sessions` table) so a DB leak does not leak sessions. Sessions are listable and revocable per device.
-- "Remember device" issues a long-lived trusted-device record, not a longer session.
-- CSRF: double-submit token for cookie-authenticated state-changing requests. Public API uses bearer API keys
-  (hashed, prefixed, scoped) and is not cookie-authenticated.
-- Rate limiting: Redis sliding window per IP + per account on auth endpoints; progressive lockout with audit events.
-- MFA/OAuth/SSO-ready: `user_identities` (provider, subject) and `user_mfa_factors` tables exist from day one; login is
-  a state machine (`password_ok → mfa_required → authenticated`) so factors can be added without rewriting.
-- RBAC: permissions are string constants (`contacts.read`, `campaigns.send`, …) defined in `packages/shared`.
-  Roles are per-organization sets of permissions; system roles (Owner, Admin, Marketer, Analyst, Viewer) are seeded and
-  custom roles are supported. Authorization is enforced by a NestJS guard **and** re-checked in services for
-  sensitive operations (send, delete, export).
-- Audit log: append-only table written by an interceptor for every mutating call plus explicit security events
-  (login, failed login, MFA change, role change, API key creation, export).
-
-## 6. Domain model (core aggregates)
+### Layering
 
 ```
-Organization ─┬─ Membership(User, Role)
-              ├─ Contact ─┬─ ContactChannelAddress (email / phone / whatsapp; verified, status)
-              │           ├─ ConsentRecord (channel, topic, lawful basis, source, version, evidence, withdrawn_at)
-              │           ├─ TopicSubscription
-              │           ├─ ContactScore (engagement, fit, per-channel, total; decayed)
-              │           └─ custom field values (JSONB, typed by FieldDefinition)
-              ├─ List / ListMembership       (static)
-              ├─ Segment (condition AST)     (dynamic, materialized snapshots)
-              ├─ Tag / Topic / Suppression
-              ├─ Template / Asset
-              ├─ Campaign ── Message(variant[]) ── Send (run) ── Delivery (per recipient)
-              ├─ Journey ── JourneyVersion (graph) ── JourneyEnrollment
-              ├─ Event (append-only, partitioned by month)
-              ├─ SenderDomain / SenderIdentity (SPF/DKIM/DMARC status)
-              ├─ Integration / Webhook / ApiKey
-              └─ AuditLog / UsageCounter
+apps/web ──HTTP──▶ http (controllers, guards) ─▶ application (services, use cases) ─▶ domain (pure rules)
+                                                     │
+                                                     ▼
+                                        @workeasy/db (context-bound tx) ─▶ PostgreSQL (RLS)
+apps/worker ─▶ tenant-job wrapper ─▶ application code ─▶ @workeasy/db
+Other Workeasy products ─▶ public API (Phase 15) and integration events only — never the database
 ```
 
-## 7. Communication pipeline (channel-agnostic)
+**Rule: the API never sends messages; the worker sends.** The API depends on `packages/channels` only for verifying
+and parsing provider callbacks and for test sends.
+
+## 4. Multi-tenancy (summary — see `tenancy.md`)
+
+**Hierarchy:** Platform → Organization → Workspace. Every entity is declared platform-, user-, organization- or workspace-owned.
+
+**Two independent layers:**
+1. **Application:** principal from the session, context from the URL looked up through the caller's own membership, permission check, then `inTenant`.
+2. **Database:** forced RLS on every table, keyed on transaction-local `app.org_id`, `app.workspace_id` and `app.user_id`.
+
+**The runtime role cannot bypass RLS.** Genuinely cross-tenant lookups are narrow `SECURITY DEFINER` functions owned by
+`workeasy_owner` that return ids only:
+- session by token hash
+- invitation by token hash
+- provider message → tenant
+- slug availability
+- identity linking
+- security-event write
+
+Background jobs **do not** use a privileged role. They run as `workeasy_app` inside `withTenant`, built from a validated
+envelope.
+
+## 5. Identity (summary — see `identity.md`)
+
+`IdentityProvider` (local today, Workeasy SSO later) → `ExternalIdentity` → `link_identity` → platform session →
+`AuthenticatedPrincipal`. Nothing below the session layer knows how the user authenticated.
+
+## 6. Request pipeline (API)
+
+Global guards run in this fixed order:
+1. **AuthenticationGuard:** session cookie → principal (with rotation). Refuses routes with no declared access policy.
+2. **CsrfGuard:** signed, session-bound double-submit token + Origin check on unsafe methods.
+3. **RateLimitGuard:** per-route policy by trusted IP or user.
+4. **AccessGuard:** for organization/workspace routes, membership + workspace access + permission. Outsiders get 404; members without the permission get 403 and an audit record.
+
+Then the controller validates input with the shared Zod contract, and the service runs one transaction via `inTenant`.
+That transaction holds the change, its audit record and its domain events.
+
+**Errors** use one shape. **Request id = correlation id**: it is generated server-side, returned as `X-Request-Id`, and stored on every audit record and event.
+
+## 7. Communication pipeline (Phases 9+)
 
 ```
-Campaign or Journey step
-   │  produces
-   ▼
-Message (channel, content ref, topic, variants)
-   │  audience resolution (lists ∪ segments − exclusions)
-   ▼
-Eligibility Engine  ── marketing status, consent(channel, topic), topic subscription,
-   │                   channel address validity, suppression, unsubscribe, frequency caps,
-   │                   quiet hours → produces per-contact decision + reason code
-   ▼
-Delivery records (one per contact×message; idempotent key)
-   │  scheduled per recipient (immediate / at time / recipient TZ / optimal time / batches)
-   ▼
-send queue (BullMQ, per-org + per-provider rate limits)
-   │
-   ▼
-Renderer (merge tags, dynamic content, link wrapping, tracking pixel — channel-capability aware)
-   │
-   ▼
-ChannelAdapter.send()  ── EmailAdapter (SMTP/SES/…), SmsAdapter (Twilio/…), WhatsAppAdapter (Cloud API)
-   │
-   ▼
-Provider callbacks / tracking hits → normalized Event → scoring, journeys, analytics, suppression
+Campaign / journey step → Message → audience resolution → Eligibility Engine (ordered reason codes)
+  → deliveries (idempotent per message×contact) → per-recipient schedule → send queue (per-org + per-provider limits)
+  → renderer → ChannelAdapter.send() → provider callbacks (verifyCallback + tenant from provider_message_routes)
+  → analytics events → scoring / journeys / rollups / suppression
 ```
-
-The `ChannelAdapter` interface is the only channel-specific code:
 
 ```ts
 interface ChannelAdapter {
-  channel: 'email' | 'sms' | 'whatsapp' | string;
-  capabilities: { html: boolean; tracking: { opens: boolean; clicks: boolean }; templatesRequireApproval: boolean; maxBodyLength?: number };
-  validateAddress(addr: string): AddressValidation;
-  render(message: RenderInput): RenderedPayload;
-  send(payload: RenderedPayload, ctx: SendContext): Promise<ProviderResult>;
-  parseCallback(req: RawCallback): NormalizedEvent[];
+  channel; capabilities;
+  validateAddress(address);
+  send(payload, ctx);
+  verifyCallback(rawBody, headers, credentials): boolean;   // before parsing; constant-time
+  parseCallback(body, headers): NormalizedEvent[];           // provider ids only, never tenant ids
 }
 ```
 
-Adding a new channel = implement the adapter + register it; eligibility, scheduling, analytics and journeys work
-unchanged.
+## 8. Events (summary — see `events.md`)
 
-## 8. Events and analytics
+| Kind | Where | Purpose |
+|---|---|---|
+| Domain events | `domain_events`, written in the same transaction (outbox) | Business facts inside Campaigns |
+| Integration events | Versioned contracts derived from domain/analytics events | Other services, customer webhooks |
+| Analytics events | Partitioned `engagement_events` | Measurement |
 
-- Single `events` table: `(org_id, id, contact_id, type, channel, source_type, source_id, occurred_at, props jsonb)`,
-  range-partitioned by month. Types are a closed enum in `packages/shared` (e.g. `message.delivered`,
-  `message.opened`, `message.clicked`, `message.bounced`, `consent.granted`, `contact.score_changed`, `purchase`).
-- Ingestion is via a queue; consumers fan out to: contact timeline, scoring, journey triggers, rollups, webhooks.
-- Rollups: per-campaign/per-day counters (unique + total) updated incrementally; dashboards never scan raw events.
-- Machine-open detection (Apple MPP, security scanners) is flagged on the event and excluded from "human opens".
+One envelope covers all three kinds: id, type, version, org, workspace, aggregate, occurred/recorded, actor, source,
+correlation, causation, idempotency key, payload. Every event store is append-only.
 
-## 9. Segments
+## 9. Data design
 
-- Conditions are stored as a typed AST (AND/OR/NOT, nested) validated by Zod.
-- A compiler turns the AST into parameterized SQL over contacts + pre-aggregated behavior tables
-  (`contact_engagement_stats`) — never over raw events.
-- Live counts in the builder are debounced, computed with `EXPLAIN`-guarded queries and cached by AST hash
-  (Redis, short TTL). Large tenants get estimates first, exact counts asynchronously.
-- Segments used by a send are snapshotted at send time for reproducible reporting.
+**Conventions:**
+- UUIDv7 ids.
+- `org_id` leads every tenant index.
+- Composite tenant foreign keys.
+- `version` columns for optimistic concurrency.
+- Soft delete for configuration objects.
+- Append-only history tables.
+- Column-level UPDATE grants.
 
-## 10. Journeys / workflows
+**Retention and partitioning** for high-volume tables are in the audit document (§9).
 
-- A journey is a versioned DAG (trigger, condition, wait, action, split, goal, exit nodes).
-- Enrollments are durable state machines in Postgres; waits are BullMQ delayed jobs keyed by enrollment+node
-  (idempotent). Publishing a new version never mutates in-flight enrollments.
-- Every step execution is logged (`journey_step_runs`) to power the visual debugger ("why did this contact go left?").
+**Migrations:**
+- Prisma generates Part A (DDL).
+- Part B is hand-written security: RLS, grants, functions, CHECK constraints, triggers.
+- Applied migrations are immutable.
+- `security-invariants.test.ts` guards Part B.
 
-## 11. Reliability and performance
+## 10. Hot paths
 
-- Idempotency keys on delivery creation and on public API POSTs.
-- Outbox pattern: domain changes and their events are written in the same transaction; a relay publishes to queues.
-- Backpressure: per-org send concurrency, per-provider rate limits, automatic throttle on bounce/complaint spikes.
-- Pagination is cursor-based everywhere. Imports/exports stream via object storage.
+| Path | Mode |
+|---|---|
+| Imports | Async, batched |
+| Segment counts | Cached and estimated |
+| Recipient generation | Set-based, chunked |
+| Sending | Queued and rate-limited |
+| Callbacks | Accept then process |
+| Analytics | Precomputed rollups |
+| Timeline | Indexed keyset |
+| Scoring | Event-driven + nightly decay |
+| Journeys | Durable queue |
 
-## 12. Security baseline
+Details are in `docs/audit/foundation-audit.md` §10.
 
-- OWASP ASVS L2 as the target. Helmet headers, strict CSP on the web app, HTML sanitization of user-supplied templates
-  in preview, SSRF-safe fetchers for URL imports/webhooks, signed webhook payloads (HMAC-SHA256 with timestamp).
-- Secrets (provider credentials) are encrypted at rest with envelope encryption (per-org data key).
-- PII export/delete endpoints for GDPR requests.
+## 11. Local development
 
-## 13. Open decisions
-
-- Development infrastructure: Docker Desktop vs. hosted Postgres/Redis (pending, see README).
-- Email provider for production (SES / SendGrid / Postmark / own MTA) — the adapter seam keeps this open.
+| Concern | Setup |
+|---|---|
+| Database | PostgreSQL 16 via `scripts/local-postgres.ps1` (no Docker or admin needed) or `docker compose`. `pnpm db:bootstrap` then `pnpm db:migrate`. |
+| Mail | Development mail goes to `.dev-mail/` (JSON with the action link) |
+| Redis | Optional in development (in-memory rate limits); required in production |

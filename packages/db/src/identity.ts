@@ -20,7 +20,12 @@ export interface IdentityStore {
 
 export function createIdentityStore(url: string, maxConnections = 5): IdentityStore {
   const prisma = new PrismaClient({
-    adapter: new PrismaPg({ connectionString: url, max: maxConnections, application_name: 'workeasy-identity' }),
+    adapter: new PrismaPg({
+      connectionString: url,
+      max: maxConnections,
+      application_name: 'workeasy-identity',
+      options: '-c TimeZone=UTC', // see index.ts
+    }),
   });
   return {
     accounts: prisma.localAccount,

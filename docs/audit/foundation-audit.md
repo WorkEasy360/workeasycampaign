@@ -570,3 +570,45 @@ Zoho has org → workspaces, with roles per workspace.
 
 **NOT READY.** Blockers B3–B9 are fixable by me in one pass once you approve the R-list. B1 needs your decision
 (D1), and B2 needs Docker or hosted database credentials.
+
+---
+
+## 14. Resolution (2026-10-02, after approval)
+
+Product decisions received:
+- **D1:** option C, own identity behind a provider abstraction
+- **D2:** workspaces from Phase 4
+- **D3:** configurable, immutable consent evidence
+
+**B2 (no database).** Resolved without admin rights. The EDB PostgreSQL 16.15 portable build lives in
+`%LOCALAPPDATA%\Programs\pgsql`. The VC++ runtime DLLs it needs were copied app-locally from Microsoft-signed copies
+(Edge 14.50.35719). It is managed by `scripts/local-postgres.ps1`.
+
+| # | Status | Where |
+|---|---|---|
+| R1 | ✅ Provenance tags on every major rule; Zoho rule recorded next to each improvement | `docs/spec.md` |
+| R2 | ✅ Soft bounce −20 (Zoho); every default labelled with its source | `docs/spec.md` §M9 |
+| R3 | ✅ `shared` = contracts only (browser-safe, no Node types); roles/transitions server-side | `apps/api/src/modules/{tenancy,campaigns}/domain` |
+| R4 | ✅ No client export; `withTenant` / `asUser` / `system`; identity and testing entry points | `packages/db/src` |
+| R5 | ✅ Bootstrap roles (owner/app/identity/reporting); grants, column-level UPDATE, forced RLS, definer functions, append-only triggers in the migration | `packages/db/scripts/bootstrap.ts`, migration Part B |
+| R6 | ✅ No privileged role for jobs; definer lookups only | `docs/architecture.md` §4, `docs/tenancy.md` |
+| R7 | ✅ Envelope + three event kinds; domain events implemented | `docs/events.md`, `apps/api/src/modules/events` |
+| R8 | ✅ Fail-closed Zod config; TRUST_PROXY explicit (never `true`); dev defaults isolated | `apps/api/src/config` |
+| R9 | ✅ dependency-cruiser + manifest check (`pnpm lint:boundaries`); violations proven to fail | `.dependency-cruiser.cjs`, `scripts/check-package-boundaries.mjs` |
+| R10 | ✅ Module layout and the "API never sends" rule documented and applied | `docs/architecture.md` §3 |
+| R11 | ✅ `verifyCallback` added to `ChannelAdapter` | `packages/channels/src/adapter.ts` |
+| R12 | ✅ `engines: >=24 <25`, `.node-version`, `engineStrict` | root |
+| R13 | ✅ Generated client, dev mail, Playwright output ignored | `.gitignore` |
+| R14 | ✅ Git initialized; work committed in reviewable steps | `git log` |
+
+**New findings during implementation** (all fixed):
+
+| Finding | Fix |
+|---|---|
+| A session was created for a deactivated user before being rejected | Status is now checked first |
+| CSRF tokens were bound only to the session, so a stale session blocked sign-in | Public routes also accept an anonymous-bound signed token |
+| Idempotency keys could be raced | Claim-first design (needed a column UPDATE grant) |
+| TypeScript 6's `types: []` default hid Node types | Declared in the server tsconfig and kept out of `shared` |
+| Timestamps written through Prisma were 5 h 30 min off, because the pg adapter sends timestamps without an offset and the server runs in Asia/Kolkata. Sessions rotated on every request and idle expiry was shortened. Caught by a flaky E2E step. | Every connection pinned to `TimeZone=UTC`, roles default to UTC, regression tests `packages/db/test/timezone.test.ts` + API rotation test |
+
+**Phase 4 readiness: READY** (and Phase 4 implemented — see the Phase 4 report).

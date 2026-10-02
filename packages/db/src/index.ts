@@ -128,6 +128,9 @@ export function createDatabase(options: DatabaseOptions): Database {
       connectionString: options.url,
       max: options.maxConnections ?? 10,
       application_name: options.applicationName ?? 'workeasy',
+      // The pg adapter sends timestamps without an offset; pin the session to UTC so they are never re-interpreted
+      // in the server's local zone (regression test: test/timezone.test.ts).
+      options: '-c TimeZone=UTC',
     }),
   });
 

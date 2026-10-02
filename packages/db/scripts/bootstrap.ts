@@ -49,9 +49,11 @@ async function main() {
       if (!existingUrl) {
         updates[env] = `postgresql://${role}:${encodeURIComponent(password)}@${admin.host}/workeasy`;
       }
-      console.log(`${verb.toLowerCase()}d role ${role}`);
+      console.log(`${exists ? "updated" : "created"} role ${role}`);
     }
     // Runtime safety nets: runaway queries and abandoned transactions are cut off server-side.
+    // All timestamps are UTC regardless of the server's local zone (connections also pin this themselves).
+    for (const role of Object.keys(ROLES)) await client.query(`ALTER ROLE ${ident(role)} SET timezone = 'UTC'`);
     for (const role of ['workeasy_app', 'workeasy_identity', 'workeasy_reporting']) {
       await client.query(`ALTER ROLE ${ident(role)} SET statement_timeout = '15s'`);
       await client.query(`ALTER ROLE ${ident(role)} SET idle_in_transaction_session_timeout = '30s'`);

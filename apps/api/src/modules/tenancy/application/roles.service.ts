@@ -87,11 +87,9 @@ export class RolesService {
   async delete(ctx: TenantRequestContext, roleId: string) {
     await inTenant(this.db, ctx, async ({ tx, audit, event }) => {
       const role = await this.loadCustomRole(tx, ctx.access.orgId, roleId);
-      const [orgUse, wsUse, inviteUse] = await Promise.all([
-        tx.organizationMembership.count({ where: { roleId, status: { not: 'removed' } } }),
-        tx.workspaceMembership.count({ where: { roleId } }),
-        tx.invitation.count({ where: { organizationRoleId: roleId, status: 'pending' } }),
-      ]);
+      const orgUse = await tx.organizationMembership.count({ where: { roleId, status: { not: 'removed' } } });
+      const wsUse = await tx.workspaceMembership.count({ where: { roleId } });
+      const inviteUse = await tx.invitation.count({ where: { organizationRoleId: roleId, status: 'pending' } });
       if (orgUse + wsUse + inviteUse > 0) {
         throw Errors.conflict(`This role is still assigned (${orgUse + wsUse} members, ${inviteUse} pending invitations). Reassign them first.`);
       }
