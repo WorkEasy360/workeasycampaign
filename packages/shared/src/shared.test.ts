@@ -1,33 +1,38 @@
 import { describe, expect, it } from 'vitest';
-import { canTransition } from './campaigns.js';
-import { PERMISSIONS, SYSTEM_ROLES } from './permissions.js';
+import { registerRequest } from './api/auth.js';
+import { createOrganizationRequest } from './api/tenancy.js';
+import { PERMISSIONS, isPermission, permissionsForScope } from './permissions.js';
 
-describe('campaign state machine', () => {
-  it('allows pausing a sending campaign but not completing a draft', () => {
-    expect(canTransition('sending', 'paused')).toBe(true);
-    expect(canTransition('draft', 'completed')).toBe(false);
+describe('permission catalogue', () => {
+  it('splits every permission into exactly one scope', () => {
+    const org = permissionsForScope('organization');
+    const ws = permissionsForScope('workspace');
+    expect(org.length + ws.length).toBe(PERMISSIONS.length);
+    expect(org).toContain('members.invite');
+    expect(ws).toContain('campaigns.send');
   });
 
-  it('treats stopped and completed as terminal', () => {
-    expect(canTransition('completed', 'sending')).toBe(false);
-    expect(canTransition('stopped', 'sending')).toBe(false);
+  it('recognises only catalogued permissions', () => {
+    expect(isPermission('campaigns.send')).toBe(true);
+    expect(isPermission('campaigns.launch_missiles')).toBe(false);
+    expect(isPermission('toString')).toBe(false);
   });
 });
 
-describe('system roles', () => {
-  it('gives the owner every permission', () => {
-    expect(SYSTEM_ROLES.owner.permissions).toEqual(PERMISSIONS);
+describe('request contracts', () => {
+  it('rejects short passwords and normalises email whitespace', () => {
+    const bad = registerRequest.safeParse({ email: ' a@b.co ', password: 'short', displayName: 'A' });
+    expect(bad.success).toBe(false);
+    const ok = registerRequest.parse({ email: ' a@b.co ', password: 'long-enough-pw', displayName: 'A' });
+    expect(ok.email).toBe('a@b.co');
   });
 
-  it('lets editors create but not send or launch', () => {
-    expect(SYSTEM_ROLES.editor.permissions).toContain('campaigns.create');
-    expect(SYSTEM_ROLES.editor.permissions).not.toContain('campaigns.send');
-    expect(SYSTEM_ROLES.editor.permissions).not.toContain('journeys.launch');
-  });
-
-  it('lets managers send but not approve or manage users', () => {
-    expect(SYSTEM_ROLES.manager.permissions).toContain('campaigns.send');
-    expect(SYSTEM_ROLES.manager.permissions).not.toContain('campaigns.approve');
-    expect(SYSTEM_ROLES.manager.permissions).not.toContain('users.invite');
+  it('lower-cases and validates organization slugs', () => {
+    const r = createOrganizationRequest.parse({ name: 'Acme', slug: 'Acme-Co', workspace: { name: 'Main' } });
+    expect(r.slug).toBe('acme-co');
+    expect(r.workspace.timezone).toBe('UTC');
+    expect(createOrganizationRequest.safeParse({ name: 'A', slug: 'a--b', workspace: { name: 'M' } }).success).toBe(
+      false,
+    );
   });
 });

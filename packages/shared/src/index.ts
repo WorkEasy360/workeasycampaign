@@ -3,3 +3,6 @@ export * from './permissions.js';
 export * from './eligibility.js';
 export * from './events.js';
 export * from './campaigns.js';
+export * from './api/common.js';
+export * from './api/auth.js';
+export * from './api/tenancy.js';

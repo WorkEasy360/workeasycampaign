@@ -1,5 +1,13 @@
-// Workeasy Campaign data model. Tenant tables carry org_id and are protected by RLS (see migrations).
-// The full identity/RBAC model is added in build step 4.
+// Workeasy Campaign data model.
+//
+// Ownership classes (docs/tenancy.md):
+//   platform      – no tenant column; reachable only through identity/session services or SECURITY DEFINER functions
+//   user-owned    – user_id column; RLS: user_id = app.current_user_id()
+//   organization  – org_id column; RLS: org_id = app.current_org_id()
+//   workspace     – org_id + workspace_id; RLS: both must match the current context
+//
+// Row-level security, grants and SQL functions are NOT expressible in Prisma. They live in the hand-written
+// sections ("Part B") of each migration and are verified by packages/db/test/security-invariants.test.ts.
 
 generator client {
   provider     = "prisma-client"
@@ -9,15 +17,394 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  schemas  = ["public", "identity"]
 }
 
+// ───────────────────────────── identity schema: local identity provider only ─────────────────────────────
+// Owned by the local IdP. The application runtime role has NO privileges here; only workeasy_identity does.
+// Replacing local auth with Workeasy SSO means dropping this schema — no organization/content data lives here.
+
+model LocalAccount {
+  id                String    @id @default(uuid(7)) @db.Uuid
+  /// Stable subject handed to the platform as (provider='local', subject=id).
+  emailNormalized   String    @unique @map("email_normalized")
+  email             String
+  passwordHash      String    @map("password_hash")
+  emailVerifiedAt   DateTime? @map("email_verified_at") @db.Timestamptz(3)
+  status            String    @default("active") // active | disabled
+  failedLoginCount  Int       @default(0) @map("failed_login_count")
+  lockedUntil       DateTime? @map("locked_until") @db.Timestamptz(3)
+  passwordChangedAt DateTime  @default(now()) @map("password_changed_at") @db.Timestamptz(3)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tokens LocalAccountToken[]
+
+  @@map("local_accounts")
+  @@schema("identity")
+}
+
+model LocalAccountToken {
+  id          String    @id @default(uuid(7)) @db.Uuid
+  accountId   String    @map("account_id") @db.Uuid
+  purpose     String // verify_email | reset_password
+  tokenHash   String    @unique @map("token_hash")
+  expiresAt   DateTime  @map("expires_at") @db.Timestamptz(3)
+  consumedAt  DateTime? @map("consumed_at") @db.Timestamptz(3)
+  requestedIp String?   @map("requested_ip")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  account LocalAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, purpose])
+  @@map("local_account_tokens")
+  @@schema("identity")
+}
+
+/// Append-only throttling ledger. Pruned by time, never updated.
+model LoginAttempt {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  emailNormalized String   @map("email_normalized")
+  ipAddress       String?  @map("ip_address")
+  succeeded       Boolean
+  attemptedAt     DateTime @default(now()) @map("attempted_at") @db.Timestamptz(3)
+
+  @@index([emailNormalized, attemptedAt])
+  @@index([ipAddress, attemptedAt])
+  @@map("login_attempts")
+  @@schema("identity")
+}
+
+// ───────────────────────────── platform principals and sessions ─────────────────────────────
+
+/// Platform-owned principal registry. Independent of how the person authenticates.
+model User {
+  id              String    @id @db.Uuid
+  email           String
+  emailNormalized String    @unique @map("email_normalized")
+  displayName     String    @map("display_name")
+  emailVerifiedAt DateTime? @map("email_verified_at") @db.Timestamptz(3)
+  status          String    @default("active") // active | deactivated
+  lastLoginAt     DateTime? @map("last_login_at") @db.Timestamptz(3)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+  deactivatedAt   DateTime? @map("deactivated_at") @db.Timestamptz(3)
+  version         Int       @default(1)
+
+  identities              UserIdentity[]
+  sessions                Session[]
+  organizationMemberships OrganizationMembership[]
+  workspaceMemberships    WorkspaceMembership[]
+
+  @@map("users")
+  @@schema("public")
+}
+
+/// Links an external identity (provider + subject) to a platform user. Adding Workeasy SSO adds rows here.
+model UserIdentity {
+  id         String    @id @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  provider   String
+  subject    String
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  lastUsedAt DateTime? @map("last_used_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@unique([provider, subject])
+  @@index([userId])
+  @@map("user_identities")
+  @@schema("public")
+}
+
+/// Platform session (user-owned). The browser holds an opaque token; only its SHA-256 is stored.
+model Session {
+  id                      String    @id @default(uuid(7)) @db.Uuid
+  userId                  String    @map("user_id") @db.Uuid
+  tokenHash               String    @unique @map("token_hash")
+  /// Previous token stays valid briefly after rotation so concurrent in-flight requests don't fail.
+  previousTokenHash       String?   @unique @map("previous_token_hash")
+  previousTokenValidUntil DateTime? @map("previous_token_valid_until") @db.Timestamptz(3)
+  provider                String
+  authMethods             String[]  @map("auth_methods")
+  createdAt               DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  lastSeenAt              DateTime  @default(now()) @map("last_seen_at") @db.Timestamptz(3)
+  rotatedAt               DateTime  @default(now()) @map("rotated_at") @db.Timestamptz(3)
+  idleExpiresAt           DateTime  @map("idle_expires_at") @db.Timestamptz(3)
+  absoluteExpiresAt       DateTime  @map("absolute_expires_at") @db.Timestamptz(3)
+  revokedAt               DateTime? @map("revoked_at") @db.Timestamptz(3)
+  revokedReason           String?   @map("revoked_reason")
+  ipAddress               String?   @map("ip_address")
+  userAgent               String?   @map("user_agent")
+  lastOrganizationId      String?   @map("last_organization_id") @db.Uuid
+  lastWorkspaceId         String?   @map("last_workspace_id") @db.Uuid
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([userId, revokedAt])
+  @@map("sessions")
+  @@schema("public")
+}
+
+/// User-level security log (login, logout, password change…). Append-only.
+model SecurityEvent {
+  id            String   @id @default(uuid(7)) @db.Uuid
+  userId        String?  @map("user_id") @db.Uuid
+  type          String
+  ipAddress     String?  @map("ip_address")
+  userAgent     String?  @map("user_agent")
+  correlationId String   @map("correlation_id") @db.Uuid
+  metadata      Json     @default("{}")
+  occurredAt    DateTime @default(now()) @map("occurred_at") @db.Timestamptz(3)
+
+  @@index([userId, occurredAt(sort: Desc)])
+  @@map("security_events")
+  @@schema("public")
+}
+
+/// Idempotency records for unsafe requests carrying an Idempotency-Key header (user-owned).
+model IdempotencyRecord {
+  userId         String   @map("user_id") @db.Uuid
+  key            String
+  scope          String
+  requestHash    String   @map("request_hash")
+  responseStatus Int      @map("response_status")
+  responseBody   Json     @map("response_body")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  expiresAt      DateTime @map("expires_at") @db.Timestamptz(3)
+
+  @@id([userId, key])
+  @@index([expiresAt])
+  @@map("idempotency_records")
+  @@schema("public")
+}
+
+// ───────────────────────────── tenancy ─────────────────────────────
+
 model Organization {
-  id        String   @id @db.Uuid
-  name      String
-  slug      String   @unique
-  timezone  String   @default("UTC")
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  id              String    @id @db.Uuid
+  name            String
+  slug            String    @unique
+  status          String    @default("active") // active | suspended | deleted
+  createdByUserId String    @map("created_by_user_id") @db.Uuid
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+  deletedAt       DateTime? @map("deleted_at") @db.Timestamptz(3)
+  version         Int       @default(1)
+
+  workspaces  Workspace[]
+  roles       Role[]
+  memberships OrganizationMembership[]
+  invitations Invitation[]
 
   @@map("organizations")
+  @@schema("public")
+}
+
+model Workspace {
+  id         String    @id @default(uuid(7)) @db.Uuid
+  orgId      String    @map("org_id") @db.Uuid
+  name       String
+  slug       String
+  timezone   String    @default("UTC")
+  status     String    @default("active") // active | archived
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt  DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+  archivedAt DateTime? @map("archived_at") @db.Timestamptz(3)
+  version    Int       @default(1)
+
+  organization Organization          @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  memberships  WorkspaceMembership[]
+  settings     WorkspaceSettings?
+
+  @@unique([orgId, id])
+  @@unique([orgId, slug])
+  @@map("workspaces")
+  @@schema("public")
+}
+
+/// Workspace-owned configuration (first workspace-scoped table; proves workspace-level RLS).
+model WorkspaceSettings {
+  orgId          String   @map("org_id") @db.Uuid
+  workspaceId    String   @id @map("workspace_id") @db.Uuid
+  defaultSenderName String? @map("default_sender_name")
+  defaultReplyTo String?  @map("default_reply_to")
+  locale         String   @default("en")
+  updatedAt      DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+  version        Int      @default(1)
+
+  workspace Workspace @relation(fields: [orgId, workspaceId], references: [orgId, id], onDelete: Cascade)
+
+  @@unique([orgId, workspaceId])
+  @@map("workspace_settings")
+  @@schema("public")
+}
+
+model Role {
+  id          String    @id @default(uuid(7)) @db.Uuid
+  orgId       String    @map("org_id") @db.Uuid
+  /// System role key (owner, admin, member, workspace_admin, …); null for custom roles.
+  key         String?
+  name        String
+  description String    @default("")
+  scope       String // organization | workspace
+  isSystem    Boolean   @default(false) @map("is_system")
+  permissions String[]
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(3)
+  version     Int       @default(1)
+
+  organization            Organization             @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  organizationMemberships OrganizationMembership[]
+  workspaceMemberships    WorkspaceMembership[]
+  invitations             Invitation[]
+
+  @@unique([orgId, id])
+  @@unique([orgId, scope, key])
+  @@map("roles")
+  @@schema("public")
+}
+
+/// A user's membership of an organization; role_id is the user's organization-scope role assignment.
+model OrganizationMembership {
+  id          String    @id @default(uuid(7)) @db.Uuid
+  orgId       String    @map("org_id") @db.Uuid
+  userId      String    @map("user_id") @db.Uuid
+  roleId      String    @map("role_id") @db.Uuid
+  status      String    @default("active") // active | suspended | removed
+  joinedAt    DateTime  @default(now()) @map("joined_at") @db.Timestamptz(3)
+  updatedAt   DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+  suspendedAt DateTime? @map("suspended_at") @db.Timestamptz(3)
+  removedAt   DateTime? @map("removed_at") @db.Timestamptz(3)
+  version     Int       @default(1)
+
+  organization         Organization          @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  user                 User                  @relation(fields: [userId], references: [id], onDelete: Restrict)
+  role                 Role                  @relation(fields: [orgId, roleId], references: [orgId, id], onDelete: Restrict)
+  workspaceMemberships WorkspaceMembership[]
+
+  @@unique([orgId, userId])
+  @@index([userId])
+  @@map("organization_memberships")
+  @@schema("public")
+}
+
+/// A user's membership of a workspace; requires an organization membership in the same org (composite FK).
+model WorkspaceMembership {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  orgId       String   @map("org_id") @db.Uuid
+  workspaceId String   @map("workspace_id") @db.Uuid
+  userId      String   @map("user_id") @db.Uuid
+  roleId      String   @map("role_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+  version     Int      @default(1)
+
+  workspace        Workspace              @relation(fields: [orgId, workspaceId], references: [orgId, id], onDelete: Restrict)
+  orgMembership    OrganizationMembership @relation(fields: [orgId, userId], references: [orgId, userId], onDelete: Restrict)
+  user             User                   @relation(fields: [userId], references: [id], onDelete: Restrict)
+  role             Role                   @relation(fields: [orgId, roleId], references: [orgId, id], onDelete: Restrict)
+
+  @@unique([workspaceId, userId])
+  @@index([orgId, userId])
+  @@map("workspace_memberships")
+  @@schema("public")
+}
+
+model Invitation {
+  id                  String    @id @default(uuid(7)) @db.Uuid
+  orgId               String    @map("org_id") @db.Uuid
+  email               String
+  emailNormalized     String    @map("email_normalized")
+  organizationRoleId  String    @map("organization_role_id") @db.Uuid
+  /// [{ workspaceId, roleId }] applied on acceptance (validated again at acceptance time).
+  workspaceGrants     Json      @default("[]") @map("workspace_grants")
+  tokenHash           String    @unique @map("token_hash")
+  status              String    @default("pending") // pending | accepted | revoked | expired
+  invitedByUserId     String?   @map("invited_by_user_id") @db.Uuid
+  expiresAt           DateTime  @map("expires_at") @db.Timestamptz(3)
+  acceptedAt          DateTime? @map("accepted_at") @db.Timestamptz(3)
+  acceptedByUserId    String?   @map("accepted_by_user_id") @db.Uuid
+  revokedAt           DateTime? @map("revoked_at") @db.Timestamptz(3)
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  version             Int       @default(1)
+
+  organization     Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  organizationRole Role         @relation(fields: [orgId, organizationRoleId], references: [orgId, id], onDelete: Restrict)
+
+  @@unique([orgId, id])
+  @@index([orgId, emailNormalized, status])
+  @@map("invitations")
+  @@schema("public")
+}
+
+// ───────────────────────────── append-only history ─────────────────────────────
+
+/// Organization audit trail. Append-only: the runtime role has SELECT + INSERT only.
+model AuditLog {
+  id            String   @id @default(uuid(7)) @db.Uuid
+  orgId         String   @map("org_id") @db.Uuid
+  workspaceId   String?  @map("workspace_id") @db.Uuid
+  actorType     String   @map("actor_type") // user | api_key | system
+  actorId       String?  @map("actor_id") @db.Uuid
+  action        String
+  outcome       String   @default("success") // success | denied | failure
+  targetType    String?  @map("target_type")
+  targetId      String?  @map("target_id")
+  ipAddress     String?  @map("ip_address")
+  userAgent     String?  @map("user_agent")
+  correlationId String   @map("correlation_id") @db.Uuid
+  metadata      Json     @default("{}")
+  occurredAt    DateTime @default(now()) @map("occurred_at") @db.Timestamptz(3)
+
+  @@index([orgId, occurredAt(sort: Desc), id(sort: Desc)])
+  @@index([orgId, actorId, occurredAt(sort: Desc)])
+  @@index([orgId, action, occurredAt(sort: Desc)])
+  @@map("audit_logs")
+  @@schema("public")
+}
+
+/// Domain events (docs/events.md). Append-only; dispatch progress is tracked elsewhere, never by UPDATE here.
+model DomainEvent {
+  id             String   @id @db.Uuid
+  orgId          String   @map("org_id") @db.Uuid
+  workspaceId    String?  @map("workspace_id") @db.Uuid
+  type           String
+  version        Int
+  aggregateType  String   @map("aggregate_type")
+  aggregateId    String   @map("aggregate_id") @db.Uuid
+  actorType      String   @map("actor_type")
+  actorId        String?  @map("actor_id")
+  source         String
+  correlationId  String   @map("correlation_id") @db.Uuid
+  causationId    String?  @map("causation_id") @db.Uuid
+  idempotencyKey String?  @map("idempotency_key")
+  payload        Json
+  occurredAt     DateTime @map("occurred_at") @db.Timestamptz(3)
+  recordedAt     DateTime @default(now()) @map("recorded_at") @db.Timestamptz(3)
+
+  @@unique([orgId, idempotencyKey])
+  @@index([orgId, aggregateType, aggregateId, recordedAt])
+  @@index([orgId, recordedAt])
+  @@map("domain_events")
+  @@schema("public")
+}
+
+// ───────────────────────────── messaging routing (platform lookup, tenant-written) ─────────────────────────────
+
+/// Maps a provider's message id to the owning tenant so inbound callbacks resolve the tenant from OUR data,
+/// never from the callback payload. Lookup across tenants only via app.resolve_provider_message().
+model ProviderMessageRoute {
+  provider          String
+  providerMessageId String   @map("provider_message_id")
+  orgId             String   @map("org_id") @db.Uuid
+  workspaceId       String   @map("workspace_id") @db.Uuid
+  deliveryId        String   @map("delivery_id") @db.Uuid
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@id([provider, providerMessageId])
+  @@index([orgId, workspaceId])
+  @@map("provider_message_routes")
+  @@schema("public")
 }

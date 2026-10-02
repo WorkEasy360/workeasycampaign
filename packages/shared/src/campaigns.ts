@@ -1,4 +1,7 @@
-/** Campaign state machine (spec M10). */
+/**
+ * Campaign status values (contract). The transition rules are server-side policy:
+ * apps/api/src/modules/campaigns/domain/campaign-state.ts. The API returns `allowedActions` per campaign.
+ */
 export const CAMPAIGN_STATUSES = [
   'draft',
   'configured',
@@ -15,23 +18,3 @@ export const CAMPAIGN_STATUSES = [
   'completed',
 ] as const;
 export type CampaignStatus = (typeof CAMPAIGN_STATUSES)[number];
-
-export const CAMPAIGN_TRANSITIONS: Record<CampaignStatus, readonly CampaignStatus[]> = {
-  draft: ['configured'],
-  configured: ['draft', 'content_ready'],
-  content_ready: ['draft', 'configured', 'validated'],
-  validated: ['draft', 'content_ready', 'pending_approval', 'scheduled', 'queued'],
-  pending_approval: ['draft', 'validated'],
-  scheduled: ['draft', 'queued'],
-  queued: ['sending', 'stopped'],
-  sending: ['paused', 'paused_by_system', 'awaiting_winner', 'stopped', 'completed'],
-  awaiting_winner: ['sending', 'stopped'],
-  paused: ['sending', 'stopped'],
-  paused_by_system: ['sending', 'stopped'],
-  stopped: [],
-  completed: [],
-};
-
-export function canTransition(from: CampaignStatus, to: CampaignStatus): boolean {
-  return CAMPAIGN_TRANSITIONS[from].includes(to);
-}
