@@ -9,3 +9,5 @@ allowBuilds:
   esbuild: false # platform binary comes from optionalDependencies; install.js is only a fallback
   msgpackr-extract: false # optional native accelerator for BullMQ's msgpackr; prebuilds shipped, JS fallback exists
   prisma: false # preinstall only prints a Node version warning
+
+engineStrict: true

@@ -1,22 +1,16 @@
-import 'reflect-metadata';
-import { NestFactory } from '@nestjs/core';
-import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
-import cookie from '@fastify/cookie';
-import helmet from '@fastify/helmet';
-import { AppModule } from './app.module.js';
+import { createApp } from './app.factory.js';
+import { loadConfig, loadDotEnvForDevelopment } from './config/env.js';
 
-async function bootstrap() {
-  const app = await NestFactory.create<NestFastifyApplication>(
-    AppModule,
-    new FastifyAdapter({ trustProxy: true, bodyLimit: 10 * 1024 * 1024 }),
-  );
-  await app.register(helmet);
-  await app.register(cookie, { secret: process.env.SESSION_SECRET });
-  app.enableShutdownHooks();
-
-  const port = Number(process.env.PORT ?? 4000);
-  await app.listen(port, '0.0.0.0');
-  console.log(`API listening on :${port}`);
+async function main() {
+  loadDotEnvForDevelopment();
+  // Throws with a list of problems if configuration is incomplete or unsafe — the process must not start.
+  const config = loadConfig();
+  const app = await createApp(config);
+  await app.listen(config.port, '0.0.0.0');
+  console.log(`API listening on :${config.port} (${config.env})`);
 }
 
-void bootstrap();
+main().catch((err: unknown) => {
+  console.error(err instanceof Error ? err.message : err);
+  process.exit(1);
+});

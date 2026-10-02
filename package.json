@@ -3,20 +3,25 @@
   "private": true,
   "packageManager": "pnpm@12.8.1",
   "engines": {
-    "node": ">=22"
+    "node": ">=24 <25"
   },
   "scripts": {
     "dev": "pnpm -r --parallel --filter \"./apps/*\" run dev",
     "build": "pnpm -r run build",
     "typecheck": "pnpm -r run typecheck",
-    "test": "pnpm -r run test",
-    "db:generate": "pnpm --filter @workeasy/db generate",
+    "test": "pnpm -r --workspace-concurrency=1 run test",
+    "test:e2e": "pnpm --filter @workeasy/e2e test",
+    "lint:boundaries": "node scripts/check-package-boundaries.mjs && depcruise apps packages --config .dependency-cruiser.cjs",
+    "check": "pnpm lint:boundaries && pnpm typecheck && pnpm test",
+    "db:bootstrap": "pnpm --filter @workeasy/db bootstrap",
     "db:migrate": "pnpm --filter @workeasy/db migrate",
+    "db:generate": "pnpm --filter @workeasy/db generate",
     "infra:up": "docker compose up -d",
     "infra:down": "docker compose down"
   },
   "devDependencies": {
     "@types/node": "24.19.0",
+    "dependency-cruiser": "18.5.0",
     "tsx": "^4.23.15",
     "typescript": "6.0.3",
     "vitest": "5.0.3"

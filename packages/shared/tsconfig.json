@@ -1,6 +1,7 @@
 {
   "extends": "@workeasy/config/tsconfig.base.json",
-  "compilerOptions": { "outDir": "dist", "rootDir": "src" },
+  "//": "Browser-shipped contracts: no Node globals (Buffer, process…) — keeps this package isomorphic.",
+  "compilerOptions": { "outDir": "dist", "rootDir": "src", "types": [], "lib": ["ES2022"] },
   "include": ["src"],
   "exclude": ["src/**/*.test.ts"]
 }

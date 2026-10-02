@@ -1,10 +1,29 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Inject } from '@nestjs/common';
+import type { Database } from '@workeasy/db';
+import { Public } from '../common/access.js';
+import { AppError } from '../common/errors.js';
+import { DATABASE } from '../infrastructure/providers.js';
 
 @Controller('health')
 export class HealthController {
-  /** Liveness probe. Readiness (DB/Redis checks) is added with the data layer in step 4. */
+  constructor(@Inject(DATABASE) private readonly db: Database) {}
+
+  /** Liveness: the process is up. */
   @Get()
-  check() {
-    return { status: 'ok', service: 'api', time: new Date().toISOString() };
+  @Public()
+  live() {
+    return { status: 'ok' };
+  }
+
+  /** Readiness: dependencies reachable. */
+  @Get('ready')
+  @Public()
+  async ready() {
+    try {
+      await this.db.ping();
+    } catch {
+      throw new AppError('internal_error', 503, 'Database unavailable');
+    }
+    return { status: 'ready' };
   }
 }

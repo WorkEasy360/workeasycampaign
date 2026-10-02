@@ -43,10 +43,25 @@ export interface NormalizedEvent {
   props: Record<string, unknown>;
 }
 
+/** Provider credentials needed to verify an inbound callback (resolved from our config, never from the request). */
+export interface CallbackCredentials {
+  signingSecret: string;
+}
+
 export interface ChannelAdapter {
   readonly channel: Channel;
   readonly capabilities: ChannelCapabilities;
   validateAddress(address: string): AddressValidation;
   send(payload: RenderedPayload, ctx: SendContext): Promise<ProviderResult>;
+  /**
+   * Verify a provider callback's authenticity over the RAW request body before anything is parsed.
+   * Must use a constant-time comparison and reject stale timestamps where the provider signs them.
+   * Callbacks that fail verification are dropped and logged; they never reach parseCallback.
+   */
+  verifyCallback(rawBody: Buffer, headers: Record<string, string>, credentials: CallbackCredentials): boolean;
+  /**
+   * Normalize a verified callback. The returned events carry the PROVIDER's message id only; the owning tenant is
+   * resolved from provider_message_routes (db.system.resolveProviderMessage), never from payload fields.
+   */
   parseCallback(body: unknown, headers: Record<string, string>): NormalizedEvent[];
 }

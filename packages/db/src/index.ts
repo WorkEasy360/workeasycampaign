@@ -45,6 +45,9 @@ export interface ResolvedSession {
   sessionId: string;
   userId: string;
   userStatus: string;
+  userEmail: string;
+  userDisplayName: string;
+  userEmailVerified: boolean;
   provider: string;
   authMethods: string[];
   createdAt: Date;
@@ -164,6 +167,9 @@ export function createDatabase(options: DatabaseOptions): Database {
           session_id: string;
           user_id: string;
           user_status: string;
+          user_email: string;
+          user_display_name: string;
+          user_email_verified: boolean;
           provider: string;
           auth_methods: string[];
           created_at: Date;
@@ -180,6 +186,9 @@ export function createDatabase(options: DatabaseOptions): Database {
             sessionId: r.session_id,
             userId: r.user_id,
             userStatus: r.user_status,
+            userEmail: r.user_email,
+            userDisplayName: r.user_display_name,
+            userEmailVerified: r.user_email_verified,
             provider: r.provider,
             authMethods: r.auth_methods,
             createdAt: r.created_at,

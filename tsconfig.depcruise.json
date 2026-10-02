@@ -1,0 +1,6 @@
+{
+  "//": "Used only by dependency-cruiser to resolve imports across the monorepo.",
+  "extends": "./packages/config/tsconfig.base.json",
+  "compilerOptions": { "noEmit": true, "allowJs": true, "jsx": "preserve", "paths": { "@/*": ["./apps/web/src/*"] } },
+  "include": ["apps/*/src", "apps/*/test", "packages/*/src", "packages/*/test", "packages/*/scripts"]
+}

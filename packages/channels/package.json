@@ -18,6 +18,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "devDependencies": {
+    "@types/node": "24.19.0",
     "@types/nodemailer": "^8.0.2",
     "@workeasy/config": "workspace:*"
   },

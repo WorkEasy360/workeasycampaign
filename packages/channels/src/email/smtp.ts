@@ -43,6 +43,11 @@ export class SmtpEmailAdapter implements ChannelAdapter {
     }
   }
 
+  verifyCallback(): boolean {
+    // SMTP has no HTTP callbacks to accept; reject anything that claims to be one.
+    return false;
+  }
+
   parseCallback(): [] {
     // SMTP has no delivery callbacks; bounces arrive via the bounce mailbox processor.
     return [];

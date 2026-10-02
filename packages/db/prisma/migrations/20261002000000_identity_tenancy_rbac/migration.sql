@@ -17,8 +17,6 @@ CREATE TABLE "identity"."local_accounts" (
     "password_hash" TEXT NOT NULL,
     "email_verified_at" TIMESTAMPTZ(3),
     "status" TEXT NOT NULL DEFAULT 'active',
-    "failed_login_count" INTEGER NOT NULL DEFAULT 0,
-    "locked_until" TIMESTAMPTZ(3),
     "password_changed_at" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "created_at" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMPTZ(3) NOT NULL,
@@ -494,8 +492,10 @@ CREATE TRIGGER login_attempts_append_only BEFORE UPDATE ON "identity"."login_att
 
 -- ─── 4. Privileges: workeasy_identity (local IdP) — identity schema only ────────────────────────────────────
 GRANT SELECT, INSERT ON "identity"."local_accounts" TO workeasy_identity;
-GRANT UPDATE (email, email_verified_at, status, failed_login_count, locked_until, password_hash, password_changed_at, updated_at)
+GRANT UPDATE (email, email_verified_at, status, password_hash, password_changed_at, updated_at)
   ON "identity"."local_accounts" TO workeasy_identity;
+-- DELETE: compensate a registration whose platform link failed, and future account erasure (tokens cascade).
+GRANT DELETE ON "identity"."local_accounts" TO workeasy_identity;
 GRANT SELECT, INSERT ON "identity"."local_account_tokens" TO workeasy_identity;
 GRANT UPDATE (consumed_at) ON "identity"."local_account_tokens" TO workeasy_identity;
 GRANT SELECT, INSERT ON "identity"."login_attempts" TO workeasy_identity;
@@ -514,6 +514,8 @@ GRANT UPDATE (token_hash, previous_token_hash, previous_token_valid_until, last_
 
 GRANT SELECT ON "security_events" TO workeasy_app;           -- inserts only via app.record_security_event()
 GRANT SELECT, INSERT, DELETE ON "idempotency_records" TO workeasy_app;
+-- Claimed as pending first, completed after the work succeeds; DELETE releases a claim when the work fails.
+GRANT UPDATE (response_status, response_body) ON "idempotency_records" TO workeasy_app;
 
 GRANT SELECT, INSERT ON "organizations" TO workeasy_app;
 GRANT UPDATE (name, status, updated_at, deleted_at, version) ON "organizations" TO workeasy_app;
@@ -653,11 +655,12 @@ END $$;
 -- Session lookup by token hash, before any user context exists. Returns the session only if the token is
 -- current, or is the previous token within its rotation grace window.
 CREATE FUNCTION app.resolve_session(p_token_hash text)
-RETURNS TABLE (session_id uuid, user_id uuid, user_status text, provider text, auth_methods text[],
+RETURNS TABLE (session_id uuid, user_id uuid, user_status text, user_email text, user_display_name text,
+               user_email_verified boolean, provider text, auth_methods text[],
                created_at timestamptz, rotated_at timestamptz, idle_expires_at timestamptz,
                absolute_expires_at timestamptz, revoked_at timestamptz, is_previous_token boolean)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public AS $$
-  SELECT s.id, s.user_id, u.status, s.provider, s.auth_methods, s.created_at, s.rotated_at, s.idle_expires_at,
+  SELECT s.id, s.user_id, u.status, u.email, u.display_name, u.email_verified_at IS NOT NULL, s.provider, s.auth_methods, s.created_at, s.rotated_at, s.idle_expires_at,
          s.absolute_expires_at, s.revoked_at, (s.token_hash <> p_token_hash)
   FROM sessions s JOIN users u ON u.id = s.user_id
   WHERE s.token_hash = p_token_hash
