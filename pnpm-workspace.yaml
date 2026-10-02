@@ -1,0 +1,11 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+# Install scripts are denied unless a package demonstrably needs one (see docs/audit/foundation-audit.md §2).
+allowBuilds:
+  '@prisma/engines': true # postinstall fetches the schema engine binary used by `prisma migrate`
+  argon2: false # ships N-API prebuilds; install script only compiles when no prebuild matches
+  esbuild: false # platform binary comes from optionalDependencies; install.js is only a fallback
+  msgpackr-extract: false # optional native accelerator for BullMQ's msgpackr; prebuilds shipped, JS fallback exists
+  prisma: false # preinstall only prints a Node version warning
