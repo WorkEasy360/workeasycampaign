@@ -41,7 +41,7 @@ granted by **migrations**, so a hosted database gets exactly the same grants.
 | lists / tags | ✓ | ✓ | name, description, status/color, deleted_at, version | — (soft delete) |
 | list_memberships / contact_tags | ✓ | ✓ | — | ✓ |
 | topics | ✓ | ✓ | parent, name, description, status, is_default, position, version — **not `key`** | — |
-| contact_topic_preferences / consent_states | ✓ | ✓ | state/status, changed_by, lawful_basis, last_event_id, changed_at | — |
+| contact_topic_preferences / consent_states | ✓ | ✓ | state/status, changed_by, lawful_basis, last_event_id, changed_at; consent_states also recorded_at, subject_fingerprint (hardening) | — |
 | **consent_events** | ✓ | ✓ | — **append-only** | — (only `app.purge_consent_evidence`) |
 | consent_retention_policies | ✓ | ✓ | retention columns, updated_by, version | — |
 | suppressions | ✓ | ✓ | **lift columns only** (active_key, lifted_at, lifted_by_user_id, lift_reason) | — |
@@ -67,81 +67,19 @@ granted by **migrations**, so a hosted database gets exactly the same grants.
   - no dynamic SQL
   - return the minimum (ids and status)
   - EXECUTE revoked from PUBLIC and granted to `workeasy_app` only
-- **CHECK constraints** on every status and scope enum (Phase 5: subscription types, identity kinds, field types and keys `^[a-z][a-z0-9_]{1,39}# Security
-
-Security controls as implemented in Phase 4. Gaps and later-phase items are listed at the end.
-
-## Database roles and privileges
-
-The bootstrap (`packages/db/scripts/bootstrap.ts`) creates the roles and databases. Every table privilege below is
-granted by **migrations**, so a hosted database gets exactly the same grants.
-
-| Role | Login | Attributes | Purpose |
-|---|---|---|---|
-| `workeasy_owner` | yes | NOSUPERUSER NOCREATEROLE NOCREATEDB **BYPASSRLS** | Owns the schemas, runs migrations, owns the `SECURITY DEFINER` lookup functions. **Never configured in the API or worker.** |
-| `workeasy_app` | yes | NOSUPERUSER NOBYPASSRLS; statement_timeout 15 s; idle_in_transaction 30 s | API and worker runtime |
-| `workeasy_identity` | yes | NOSUPERUSER NOBYPASSRLS | Local identity provider (schema `identity` only) |
-| `workeasy_reporting` | yes | NOSUPERUSER NOBYPASSRLS | Read-only reporting, still tenant-scoped by RLS |
-
-### `workeasy_app` grants
-
-**UPDATE is granted per column.** No runtime role can update `id`, `org_id`, `workspace_id` or `user_id` on any table (enforced by test).
-
-| Table | SELECT | INSERT | UPDATE (columns) | DELETE |
-|---|---|---|---|---|
-| users | ✓ | — (only via `link_identity`) | display_name, last_login_at, updated_at, version | — |
-| user_identities | ✓ | — | last_used_at | — |
-| sessions | ✓ | ✓ | token/rotation fields, last_seen_at, idle_expires_at, revoked_at, revoked_reason, ip/ua, last org/workspace | — |
-| security_events | ✓ | — (only via `record_security_event`) | — | — |
-| idempotency_records | ✓ | ✓ | response_status, response_body | ✓ (release a failed claim; expiry) |
-| organizations | ✓ | ✓ | name, status, updated_at, deleted_at, version | — |
-| workspaces | ✓ | ✓ | name, slug, timezone, status, updated_at, archived_at, version | — |
-| workspace_settings | ✓ | ✓ | default_sender_name, default_reply_to, locale, updated_at, version | — |
-| roles | ✓ | ✓ | name, description, permissions, updated_at, deleted_at, version | — |
-| organization_memberships | ✓ | ✓ | role_id, status, updated_at, suspended_at, removed_at, version | — |
-| workspace_memberships | ✓ | ✓ | role_id, updated_at, version | ✓ |
-| invitations | ✓ | ✓ | status, token_hash, expires_at, accepted_at, accepted_by_user_id, revoked_at, version | — |
-| **audit_logs** | ✓ | ✓ | — **append-only** | — |
-| **domain_events** | ✓ | ✓ | — **append-only** | — |
-| provider_message_routes | ✓ | ✓ | — | — |
-| contacts | ✓ | ✓ | profile, subscription, custom_fields, search_text, deleted/erased markers, version (no tenant keys) | — (erasure is a tombstone update) |
-| contact_identities | ✓ | ✓ | is_primary, verified_at (value immutable: change = remove + add) | ✓ |
-| custom_field_definitions | ✓ | ✓ | definition columns; key/type changes refused by the service once `key_locked` | ✓ (service allows only never-used fields) |
-| lists / tags | ✓ | ✓ | name, description, status/color, deleted_at, version | — (soft delete) |
-| list_memberships / contact_tags | ✓ | ✓ | — | ✓ |
-| topics | ✓ | ✓ | parent, name, description, status, is_default, position, version — **not `key`** | — |
-| contact_topic_preferences / consent_states | ✓ | ✓ | state/status, changed_by, lawful_basis, last_event_id, changed_at | — |
-| **consent_events** | ✓ | ✓ | — **append-only** | — (only `app.purge_consent_evidence`) |
-| consent_retention_policies | ✓ | ✓ | retention columns, updated_by, version | — |
-| suppressions | ✓ | ✓ | **lift columns only** (active_key, lifted_at, lifted_by_user_id, lift_reason) | — |
-| contact_imports | ✓ | ✓ | status, progress, counts, mapping/options, dry-run summary, timestamps, version | — |
-| contact_import_issues | ✓ | ✓ | — | ✓ (discarded dry-run issues) |
-| `_prisma_migrations` | — | — | — | — |
-
-### Other roles
-
-- **`workeasy_identity`:**
-  - `identity.local_accounts`: SELECT, INSERT, UPDATE on credential/verification columns, DELETE (registration rollback and erasure).
-  - `identity.local_account_tokens`: SELECT, INSERT, UPDATE(consumed_at).
-  - `identity.login_attempts`: SELECT, INSERT (append-only).
-  - **No** access to `public`.
-- **`workeasy_reporting`:** SELECT on organizations, workspaces, audit_logs and domain_events. RLS applies.
-
-### Defences on top of grants
-
-- **Forced RLS.** `ENABLE` + `FORCE ROW LEVEL SECURITY` on every public table.
-- **Append-only triggers.** `BEFORE UPDATE` triggers on `audit_logs`, `domain_events`, `security_events`, `consent_events` and `identity.login_attempts` reject updates, even from the owner.
-- **Definer functions:**
-  - pinned `search_path`
-  - no dynamic SQL
-  - return the minimum (ids and status)
-  - EXECUTE revoked from PUBLIC and granted to `workeasy_app` only
-, consent scope = exactly one of channel/topic, suppression target = exactly one of contact/address, import statuses).
+- **CHECK constraints** on every status and scope enum (Phase 5: subscription types, identity kinds, field types and keys `^[a-z][a-z0-9_]{1,39}$`, consent scope = exactly one of channel/topic, suppression target = exactly one of contact/address, import statuses).
 - **Phase 5 definer functions:**
   - `app.search_contact_ids(query, limit)` filters to the caller's current org + workspace itself, escapes LIKE wildcards (`%`, `_`, `!`), returns ids only, caps at 5,000. Needed because `ILIKE` is not leakproof, so RLS prevents index use.
   - `app.purge_consent_evidence(workspace)` refuses any workspace other than the current context, and deletes only evidence past its retention.
 
 All of this is verified by `packages/db/test/security-invariants.test.ts`, which fails when a future migration weakens it.
+
+### Phase 5 hardening (migration `20261010000000_phase5_hardening`)
+
+- `consent_events`: `CHECK (occurred_at <= recorded_at + 5 minutes)` — evidence cannot be dated in the future.
+- `consent_states.recorded_at` (server time) and `subject_fingerprint` (address binding); the retention purge measures age from `recorded_at` and deletes only events recorded no later than the withdrawal, so a backdated entry can no longer make evidence purgeable.
+- Imports: one processing import per workspace via `pg_advisory_xact_lock` (EXECUTE is PUBLIC by default; no extra grant).
+- Full audit, RLS table and security test matrix: `docs/audit/phase-5-hardening-audit.md`.
 
 ## Application controls
 
@@ -214,5 +152,8 @@ Each record holds the actor, a snapshot of the actor's email, the IP (trusted), 
 | Encryption of provider credentials (envelope, per-organization key) | With the first stored credential (Phase 12/15) |
 | Uploaded CSVs are not malware-scanned (they are parsed as text, never executed or served back) | Add scanning with object storage (Phase 8) |
 | Domain-level suppression | Not implemented (Zoho behaviour `[NOT_VERIFIED]`) |
+| Idempotency records keep the stored response (for `POST /contacts`, the contact's email) for 24 h, and erasure does not remove them | Accepted: user-scoped, RLS-protected, expires in 24 h (hardening L-6) |
+| Import files on local disk; multiple API instances need a shared `FILE_STORE_DIR` | Object-store `FileStore` (Phase 8) |
+| Address suppressions keep the normalized address after the contact is erased | By design: the do-not-contact request must keep working |
 | SSRF-safe fetcher, upload scanning, sandboxed HTML preview | With the features that need them (Phases 7, 8, 15) |
 | Production migration role is a superuser in the local Docker image | Production uses `workeasy_owner` (non-superuser) via the bootstrap; documented in deployment (Phase 19) |

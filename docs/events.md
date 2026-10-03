@@ -63,6 +63,56 @@ Membership changes use the **contact** as aggregate, so a contact's timeline is 
 
 **Verified by test.** Creating an organization writes four domain events that share one correlation id (`apps/api/test/tenancy.test.ts`).
 
+## Audience event contract v1 (frozen at the end of Phase 5)
+
+Phase 6 and later consumers may rely on these events exactly as described. Changes are additive (new optional
+payload fields) or a new `version`; a type is never repurposed.
+
+**Envelope (every event, column in `domain_events`):**
+
+| Field | Meaning |
+|---|---|
+| `id` | UUIDv7, unique. **Consumers deduplicate by `id`** (delivery to consumers is at-least-once once dispatch exists). |
+| `type`, `version` | e.g. `contact.created`, `1`. The payload schema is fixed per (type, version) in `apps/api/src/modules/events/catalogue.ts` and validated before storage. |
+| `org_id`, `workspace_id` | Always both for audience events (all audience aggregates are workspace-owned). |
+| `aggregate_type`, `aggregate_id` | See the table below. |
+| `occurred_at`, `recorded_at` | Server time of the change (same transaction). |
+| `actor_type`, `actor_id` | `user` + user id for API calls and imports (the importing user); `system` for system changes. |
+| `source` | `api` or `import`. |
+| `correlation_id` | The HTTP request id, or the import's start request for every event of that import. |
+| `causation_id` | Optional link to the event that caused it. |
+| `idempotency_key` | Null for audience events: idempotency is enforced at the API (Idempotency-Key) and by the writes themselves (a no-op change emits nothing). |
+
+**Ordering:** within one aggregate, `(recorded_at, id)` is the order. There is no global order.
+**Atomicity:** an event exists only if its change committed (same transaction). A no-op (already in that state)
+emits nothing. Bulk actions and imports emit one event per affected contact.
+**Privacy:** payloads carry ids, kinds, states and changed field *names* only — never addresses, names, custom-field
+values, evidence text or CSV cells (verified by `apps/api/test/audience-hardening.test.ts`). Exceptions, by design:
+`list.created` / `tag.created` carry the list or tag name, and `topic.created` / `custom_field.*` carry keys —
+workspace configuration, not personal data.
+
+| Business fact (requested name) | Event type v1 | Aggregate | Payload |
+|---|---|---|---|
+| ContactCreated | `contact.created` | contact | `{ source: 'manual' \| 'import', importId? }` |
+| ContactUpdated | `contact.updated` | contact | `{ changes: string[] /* field names, e.g. "company", "customFields.city" */, importId? }` |
+| ContactDeleted | `contact.deleted` | contact | `{}` |
+| ContactRestored | `contact.restored` | contact | `{}` |
+| ContactErased | `contact.erased` | contact | `{}` |
+| Identity changes | `contact.identity_added`, `contact.identity_removed`, `contact.primary_identity_changed` | contact | `{ identityId, kind }` |
+| ConsentGranted / ConsentRevoked | `consent.recorded` (one type; read `newState`) | contact | `{ channel, action, newState: 'granted' \| 'pending' \| 'withdrawn', consentEventId }` |
+| ContactUnsubscribed | `contact.subscription_changed` (`to: 'unsubscribed'`) — the global opt-out; channel opt-outs are `consent.recorded` with `newState: 'withdrawn'` | contact | `{ from, to, by: 'user' \| 'contact' \| 'system' }` |
+| TopicChanged (preference) | `contact.topic_subscribed`, `contact.topic_unsubscribed` | contact | `{ topicId, consentEventId }` |
+| TopicChanged (definition) | `topic.created/updated/archived/restored/default_changed` | topic | ids, key, kind, changed field names |
+| ListMembershipChanged | `list.member_added`, `list.member_removed` | contact | `{ listId, source? }` |
+| TagChanged | `contact.tagged`, `contact.untagged` | contact | `{ tagId }` |
+| SuppressionAdded | `suppression.added` | suppression | `{ channel, reason, contactId \| null, targetType: 'contact' \| 'address' }` |
+| SuppressionLifted | `suppression.lifted` | suppression | `{ contactId \| null }` |
+| ImportCompleted | `import.completed` | import | `{ created, updated, skipped, errors, listIds, tagIds }` — emitted exactly once per import |
+| ImportFailed | `import.failed` | import | `{ reason }` (a fixed, user-facing message; never row data) |
+
+Not invented: there are no separate `ConsentGranted`/`ConsentRevoked` types — `consent.recorded` with `newState`
+covers both without duplicating the evidence log. Eligibility emits no events (see `docs/eligibility.md`).
+
 ## Analytics events (Phase 11 design)
 
 - **Partitioning.** `engagement_events` is range-partitioned by month on `occurred_at`. Indexes:

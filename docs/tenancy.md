@@ -158,4 +158,5 @@ Organization:             active → deleted (soft; every member loses access im
 | Browser: viewer cannot see admin controls; the API refuses the direct call; removal ends access | `apps/e2e/tests/phase4.spec.ts` |
 | Phase 5 tables: workspace isolation for every audience table, composite FKs, immutable evidence, suppression lift-only updates, workspace-scoped domain events, purge bound to the current workspace, search function bound to the caller's workspace | `packages/db/test/audience-rls.test.ts`, `audience-queries.test.ts` |
 | HTTP: other organization → 404; workspace A ids through workspace B → 404 (no IDOR); viewer/editor denials audited | `apps/api/test/audience.test.ts` |
+| Hardening sweep: every Phase 5 resource of A probed through B (14 routes → 404), bulk ignores foreign ids, foreign topic → 400, and zero rows of A visible to `workeasy_app` in B's context | `apps/api/test/audience-hardening.test.ts` |
 | Browser: a second workspace sees none of the first one's contacts; a viewer cannot change contacts and the API refuses direct calls | `apps/e2e/tests/phase5.spec.ts` |

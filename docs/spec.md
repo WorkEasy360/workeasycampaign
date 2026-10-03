@@ -124,7 +124,7 @@ Implemented in Phase 4; see `docs/identity.md`.
 - Custom fields: 12 types, up to 200 per workspace; key and type lock once a field holds data; used fields are archived, never deleted; select options are archived, never removed.
 - Imports: up to 100,000 rows / 20 MB per file (configurable), mandatory dry run, chunked and resumable.
 - Timeline: built from domain events (profile, identity, list, tag, topic, consent, import). Suppressions show on their own card. Message activity joins it in Phases 9–11.
-- The 3× monthly status-change cap is not implemented (pricing decision pending).
+- The 3× monthly status-change cap is **deferred** (decision in `docs/audit/phase-5-hardening-audit.md`): it is a Zoho plan/billing safeguard, our plans and usage metering do not exist until Phase 21, and nothing in Phase 5 depends on it.
 
 ## M5. Audience: lists, tags, suppression
 
@@ -167,7 +167,8 @@ Consent is **immutable, auditable evidence** with a **configurable retention pol
 - Changing it needs `consent.manage` only, not also `security.manage`.
 - Erasure keeps the contact as a tombstone without personal data instead of nulling `contact_id`; evidence stays pseudonymous through `subject_fingerprint`.
 - Event actions are `subscribed / unsubscribed / pending / confirmed / revoked`; `expired` and `reaffirmed` arrive with double opt-in and forms.
-- The purge runs on demand (rate-limited, audited); the scheduled job arrives with the BullMQ worker. `pending_expiry_days` is stored but not yet applied.
+- The purge runs on demand (rate-limited, audited); scheduling is deferred to the BullMQ worker. Retention is measured from server time (hardening H-1).
+- Pending consent expires after `pending_expiry_days` (derived on read; `CONSENT_EXPIRED`). Consent is bound to the address it was given for (hardening H-2).
 
 ### 8.1 Consent event (append-only) `[OUR_IMPROVEMENT]`
 
@@ -218,7 +219,7 @@ Each organization has a policy, with optional per-workspace overrides:
 
 ### 8.4 Eligibility Engine
 
-**As built (Phase 5): see `docs/eligibility.md`.** The engine evaluates **every** check and returns all failing reasons, most fundamental first `[OUR_IMPROVEMENT]` (a user fixing a contact needs every blocker). Codes as implemented: `CONTACT_DELETED`, `NOT_MARKETING`, `UNSUBSCRIBED`, `NO_ADDRESS`, `SUPPRESSED`, `CONSENT_MISSING` / `CONSENT_PENDING` / `CONSENT_WITHDRAWN` (was `NO_CHANNEL_CONSENT`), `TOPIC_NOT_SUBSCRIBED` (was `NO_TOPIC_SUBSCRIPTION`), `TOPIC_INACTIVE`. Reserved: `FREQUENCY_CAP`, `QUIET_HOURS`, `DUPLICATE`, `UNENGAGED`, `CHANNEL_UNAVAILABLE`, `EXCLUDED_BY_CAMPAIGN`. Requiring channel consent for marketing on every channel is `[OUR_ORIGINAL_DESIGN]` and stricter than verified Zoho behaviour.
+**As built (Phase 5): see `docs/eligibility.md`.** The engine evaluates **every** check and returns all failing reasons, most fundamental first `[OUR_IMPROVEMENT]` (a user fixing a contact needs every blocker). Codes as implemented: `CONTACT_DELETED`, `NOT_MARKETING`, `UNSUBSCRIBED`, `NO_ADDRESS`, `SUPPRESSED`, `CONSENT_MISSING` / `CONSENT_PENDING` / `CONSENT_WITHDRAWN` (was `NO_CHANNEL_CONSENT`), `TOPIC_NOT_SUBSCRIBED` (was `NO_TOPIC_SUBSCRIPTION`), `TOPIC_INACTIVE`. Reserved: `FREQUENCY_CAP`, `QUIET_HOURS`, `DUPLICATE`, `UNENGAGED`, `CHANNEL_UNAVAILABLE`, `EXCLUDED_BY_CAMPAIGN`. Requiring channel consent for marketing on every channel is our own product decision `[OUR_ORIGINAL_DESIGN]`, not Zoho behaviour: what we verified about Zoho is the subscription-type gate; whether Zoho requires per-channel consent is `[NOT_VERIFIED]`. Phase 5 hardening added `CONSENT_EXPIRED` and `CONSENT_ADDRESS_CHANGED` (address-bound consent); the frozen contract is `docs/eligibility.md`.
 
 Original design: checks run in order, and the first failure is the recorded reason.
 

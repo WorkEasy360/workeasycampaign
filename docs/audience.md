@@ -108,8 +108,8 @@ workspace, and the same address can exist in another workspace.
 - **Our mapping** `[OUR_ORIGINAL_DESIGN]`: **Brand = workspace**, which keeps brands isolated. Categories are topics with `kind = category`. Topics may have one category parent.
 
 **Default "Marketing" topic** (every workspace gets one at creation; existing workspaces are back-filled by the migration):
-- `[ZOHO_PARITY]`: the default topic cannot be archived while it is the only active topic.
-- `[OUR_ORIGINAL_DESIGN]`: exactly one topic is the default; another active topic can be made default.
+- `[ZOHO_PARITY]` (the rule we verified): the default topic cannot be archived while it is the only active topic.
+- `[OUR_ORIGINAL_DESIGN]` (stricter, as implemented): exactly one topic is the default and **the default can never be archived**; make another active topic the default first.
 - `[OUR_ORIGINAL_DESIGN]`: new contacts are **not** auto-subscribed to any topic. Subscriptions are explicit and recorded as evidence.
 
 ## 6. Suppression
@@ -189,6 +189,8 @@ single indexed query over `domain_events`. There is no second activity system. F
 | `consent.read` / `consent.manage` | Consent history, recording, retention policy, topic preferences |
 | `suppression.read` / `suppression.manage` | Do-not-contact registry |
 | `custom_fields.manage` | Field definitions (reading them only needs `contacts.read`) |
+
+**Composite actions need every permission they exercise** (hardening M-3): each bulk action has its own permission; creating a contact with `listIds`/`tagIds` also needs `lists.manage`/`tags.manage`; import options need `lists.manage`, `tags.manage` or `consent.manage` (checked at mapping, start and retry).
 
 **Built-in roles take their permissions from code, not from the snapshot stored with the role.** Adding a permission to
 the catalogue therefore reaches every existing organization's Workspace admin, Manager, Editor, Analyst and Viewer

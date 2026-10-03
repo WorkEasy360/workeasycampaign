@@ -23,6 +23,9 @@ upload ─▶ uploaded ──(mapping + dry run)──▶ validated ──start�
 uploaded | validated | processing | failed ──cancel──▶ cancelled
 ```
 
+- **Abandoned and stale imports expire.** An import still `uploaded`/`validated` 24 h after its last change, or `failed` for 7 days, is cancelled and its file deleted. This runs (scoped to the workspace) whenever imports are listed or a file is uploaded, so no scheduler is needed; each expiry is audited as `import.cancelled` with reason `abandoned` / `failed_expired`.
+- **At most 10 unfinished imports per workspace** (`uploaded`, `validated`, `processing`, `failed`). The 11th upload is refused with `409 TOO_MANY_OPEN_IMPORTS` before any byte is stored. Together with the 20 MB file limit this bounds disk use to 200 MB per workspace.
+- **One import runs at a time per workspace.** `start` and `retry` take a transaction-scoped advisory lock and refuse with `409 IMPORT_IN_PROGRESS` while another import is processing (works across API instances).
 - **Start requires a dry run.** `start` refuses anything that is not `validated`, so nobody imports a file blind. Changing the mapping or options returns the import to `uploaded` and discards the dry-run result and issues.
 - `start` accepts an `Idempotency-Key`; a replayed request returns the first response and does not start twice.
 - The file is deleted when the import completes or is cancelled.
@@ -32,6 +35,7 @@ uploaded | validated | processing | failed ──cancel──▶ cancelled
 | Check | Behaviour |
 |---|---|
 | Content type | Body must be `text/csv` (raw stream, not multipart); anything else is 400. |
+| Web proxy | The Next.js server buffers proxied bodies and truncates them at `experimental.proxyClientMaxBodySize` (set to 32 MB in `apps/web/next.config.ts`). **Invariant: keep it above `IMPORT_MAX_BYTES`**, so a truncated body is still over the API limit and is rejected (413), never imported partially (hardening H-3). |
 | Size | Streamed to storage and counted; above `IMPORT_MAX_BYTES` (default 20 MB) the upload is aborted with 413 and the partial file removed. The request body is drained, not destroyed, so the connection stays healthy. |
 | Rows | Counted while inspecting the stored file; above `IMPORT_MAX_ROWS` (default 100,000) the upload is refused with 413 `TOO_MANY_ROWS` and the file removed. |
 | Encoding | Must be valid UTF-8 (a BOM is accepted and stripped); otherwise 400 `ENCODING_INVALID`. The UI asks for a UTF-8 export. |
@@ -53,6 +57,7 @@ uploaded | validated | processing | failed ──cancel──▶ cancelled
   - `subscriptionType` for **new** contacts. Existing contacts' subscription type is never changed by an import.
   - `listIds`, `tagIds`, `topicIds` (≤ 20 each) applied to every imported contact.
   - `consent`: `{ channel, lawfulBasis, evidenceNote }`. Records consent with the import id and row number as evidence. Optional, and only when the user confirms they can prove it.
+- **Options need their own permissions** (hardening M-3): `listIds` needs `lists.manage`, `tagIds` needs `tags.manage`, `topicIds` and `consent` need `consent.manage`, on top of `contacts.import`. Checked when the mapping is saved and again at `start`/`retry` (the starter's permissions count, not the saver's). Violations are `403` with the offending option in `fields`.
 
 ## 4. Duplicates (deterministic, never merged)
 
@@ -81,6 +86,7 @@ contacts between the check and the start; the run's own counts are then authorit
 
 - Rows are read as a stream and applied in **chunks of 250**. Each chunk is one transaction holding the contact changes, list/tag/topic/consent changes, domain events, issues and the advanced `processed_rows` checkpoint. A chunk is all-or-nothing.
 - **Progress** is `processed_rows / total_rows`; the UI polls every 1.5 s while processing.
+- **Transient failures retry automatically** (hardening M-6): a chunk that fails because its transaction expired (e.g. the process or machine was paused), the connection dropped, or PostgreSQL reported a serialization failure or deadlock is retried up to 3 times with backoff before the import is marked `failed`. Safe because each attempt locks the import row and re-reads its status and checkpoint: a cancelled import stops, and a chunk already committed is skipped. Completion is conditional on `status = processing`, so `import.completed` is emitted exactly once even if two runners race after a "stalled" retry.
 - **Retry** resumes after the last committed chunk (rows before the checkpoint are skipped), so nothing is imported twice. Allowed for `failed`, or `processing` with no progress for 5 minutes (a crashed process).
 - **Issues** are capped at 5,000 per phase so a broken file cannot flood the database; counts stay exact. Problems are paged in the UI and downloadable as CSV.
 - **Events and audit:** `import.started`, `import.completed` and `import.failed` domain events and audit records (with file name, row count and SHA-256). `import.cancelled` is audited. Per-contact `contact.created` / `contact.updated` events carry the import id, so each contact's timeline shows the import.
@@ -93,6 +99,8 @@ shape, `{ tenant: { orgId, workspaceId }, actor, correlationId, payload: { impor
 runs under RLS for that tenant. Moving to the BullMQ worker swaps the dispatcher only.
 
 **Not yet tested:** Redis/BullMQ execution. Imports have only run in-process.
+
+**Deployment constraint:** the upload, dry run and run read the file from `FILE_STORE_DIR` on the API instance's disk. With more than one API instance, `FILE_STORE_DIR` must be a shared volume until the object-store `FileStore` (S3/MinIO) arrives; a single instance needs nothing extra. Run imports are tied to the instance that started them: if it stops, the import shows as stalled after 5 minutes and can be retried from its checkpoint.
 
 ## 8. Tests
 
