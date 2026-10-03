@@ -156,24 +156,26 @@ Query plans for the main paths are checked in `packages/db/test/audience-queries
 
 **Domain events** (no personal data in payloads; ids only):
 - `contact.*` (created, updated, deleted, restored, erased, subscription changed, identity added/removed)
-- `list.*`
-- `tag.*`
-- `topic.*`
+- `list.*` (`list.member_added` / `list.member_removed` use the contact as aggregate)
+- `tag.*`, `contact.tagged` / `contact.untagged`
+- `topic.*`, `contact.topic_subscribed` / `contact.topic_unsubscribed`
 - `consent.recorded`
 - `suppression.added` / `suppression.lifted`
 - `custom_field.*`
 - `import.*`
 
 **Aggregates:** membership facts (list, tag, topic) use the **contact** as their aggregate, so the contact timeline is a
-single indexed query over `domain_events`. There is no second activity system.
+single indexed query over `domain_events`. There is no second activity system. Full catalogue: `docs/events.md`.
 
 **Audit records** cover the sensitive actions:
 - erasure
-- suppression lift
-- bulk operations
-- import start
+- suppression added and lifted
+- staff-recorded consent
+- bulk operations (one record per action, with the selection and counts)
+- import started, completed, failed and cancelled
 - custom-field archive and delete
 - consent retention-policy changes and purges
+- access denied (Phase 4 mechanism, now also for audience routes)
 
 ## 10. Permissions (server-side)
 

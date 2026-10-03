@@ -289,6 +289,9 @@ describe('bulk operations', () => {
     const second = await owner.request('POST', url('/contacts/bulk'), body, { headers });
     expect(first.body).toEqual(second.body);
     expect(first.body.affected).toBe(1);
+    // The same key with a different request is refused, not silently replayed.
+    const other = await owner.request('POST', url('/contacts/bulk'), { ...body, action: 'delete' }, { headers });
+    expect(other.status).toBe(422);
   });
 });
 

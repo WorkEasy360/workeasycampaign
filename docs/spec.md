@@ -117,6 +117,15 @@ Implemented in Phase 4; see `docs/identity.md`.
 - A unified timeline of every event about a contact `[OUR_ORIGINAL_DESIGN]` *(brief)*.
 - Proposed limits: 200 custom fields and imports of up to 1 M rows `[OUR_ORIGINAL_DESIGN]`.
 
+**As built (Phase 5, `docs/audience.md`, `docs/imports.md`):**
+- Identities: email, phone, WhatsApp and external ids with deterministic normalization (email: trim, NFC, lower-case; phone: E.164, never guessing a country). One address belongs to at most one contact per workspace.
+- **No merges yet.** Conflicts (e.g. an import row whose email and phone belong to different contacts) are reported, never merged automatically. Reversible manual merge stays planned.
+- Self-unsubscribe is sticky: staff, imports and bulk actions cannot reverse it (`422 SELF_UNSUBSCRIBED`).
+- Custom fields: 12 types, up to 200 per workspace; key and type lock once a field holds data; used fields are archived, never deleted; select options are archived, never removed.
+- Imports: up to 100,000 rows / 20 MB per file (configurable), mandatory dry run, chunked and resumable.
+- Timeline: built from domain events (profile, identity, list, tag, topic, consent, import). Suppressions show on their own card. Message activity joins it in Phases 9–11.
+- The 3× monthly status-change cap is not implemented (pricing decision pending).
+
 ## M5. Audience: lists, tags, suppression
 
 - Lists and tags `[ZOHO_PARITY]`.
@@ -124,6 +133,8 @@ Implemented in Phase 4; see `docs/identity.md`.
   - **Zoho:** a Do-Not-Mail registry (2.0).
   - Domain-level suppression in Zoho is `[NOT_VERIFIED]`.
 - Suppressed addresses never receive a send, whatever their consent.
+
+**As built (Phase 5):** suppression per contact or per address (email, phone, WhatsApp), per channel or all channels; lifting needs a reason and keeps history. Address suppressions also block contacts created later with that address. **Domain-level suppression is not implemented** (Zoho behaviour `[NOT_VERIFIED]`). Lists support archive (frozen membership) and delete (memberships removed, contacts untouched). Tags are case-insensitively unique per workspace.
 
 ## M6. Segments
 
@@ -144,10 +155,19 @@ Implemented in Phase 4; see `docs/identity.md`.
   - **Ours:** one or more topics, and a contact qualifies through any of them `[OUR_IMPROVEMENT]`.
 - The Transactional topic is exempt from marketing opt-out but never from suppression `[OUR_ORIGINAL_DESIGN]`.
 
+**As built (Phase 5):** Category → Topic inside each workspace; the workspace plays the Brand role. Every workspace gets a default **Marketing** topic, which cannot be archived; another active topic can be made default. Topic keys are immutable (column grant). Per-topic preferences are recorded as consent events. The preference centre UI arrives with forms (Phase 20).
+
 ## M8. Consent *(D3)*
 
 Consent is **immutable, auditable evidence** with a **configurable retention policy**. There is no hard-coded
 "keep forever" rule, and deleting a contact never silently deletes consent evidence.
+
+**As built (Phase 5): see `docs/consent.md`.** Differences from the design below:
+- Retention policy is per workspace (no organization default with overrides yet); defaults are 2190 days (6 years) after withdrawal and after erasure; NULL = keep indefinitely, an explicit choice.
+- Changing it needs `consent.manage` only, not also `security.manage`.
+- Erasure keeps the contact as a tombstone without personal data instead of nulling `contact_id`; evidence stays pseudonymous through `subject_fingerprint`.
+- Event actions are `subscribed / unsubscribed / pending / confirmed / revoked`; `expired` and `reaffirmed` arrive with double opt-in and forms.
+- The purge runs on demand (rate-limited, audited); the scheduled job arrives with the BullMQ worker. `pending_expiry_days` is stored but not yet applied.
 
 ### 8.1 Consent event (append-only) `[OUR_IMPROVEMENT]`
 
@@ -198,7 +218,9 @@ Each organization has a policy, with optional per-workspace overrides:
 
 ### 8.4 Eligibility Engine
 
-Checks run in order, and the first failure is the recorded reason.
+**As built (Phase 5): see `docs/eligibility.md`.** The engine evaluates **every** check and returns all failing reasons, most fundamental first `[OUR_IMPROVEMENT]` (a user fixing a contact needs every blocker). Codes as implemented: `CONTACT_DELETED`, `NOT_MARKETING`, `UNSUBSCRIBED`, `NO_ADDRESS`, `SUPPRESSED`, `CONSENT_MISSING` / `CONSENT_PENDING` / `CONSENT_WITHDRAWN` (was `NO_CHANNEL_CONSENT`), `TOPIC_NOT_SUBSCRIBED` (was `NO_TOPIC_SUBSCRIPTION`), `TOPIC_INACTIVE`. Reserved: `FREQUENCY_CAP`, `QUIET_HOURS`, `DUPLICATE`, `UNENGAGED`, `CHANNEL_UNAVAILABLE`, `EXCLUDED_BY_CAMPAIGN`. Requiring channel consent for marketing on every channel is `[OUR_ORIGINAL_DESIGN]` and stricter than verified Zoho behaviour.
+
+Original design: checks run in order, and the first failure is the recorded reason.
 
 **Exclusions `[ZOHO_PARITY]`:**
 - `NOT_MARKETING`
@@ -455,7 +477,7 @@ Showing the order and the reason per contact is `[OUR_IMPROVEMENT]`.
 
 ## Build plan
 
-1 Spec ✅ → 2 Architecture ✅ → 3 Monorepo ✅ → Foundation audit + fixes ✅ → **4 Identity + Org + Workspace + RBAC ✅** →
-5 Contacts + Audience → 6 Campaigns → 7 Email builder → 8 Templates + Assets → 9 Messaging engine → 10 Journeys →
+1 Spec ✅ → 2 Architecture ✅ → 3 Monorepo ✅ → Foundation audit + fixes ✅ → 4 Identity + Org + Workspace + RBAC ✅ →
+**5 Contacts + Audience ✅** → 6 Campaigns → 7 Email builder → 8 Templates + Assets → 9 Messaging engine → 10 Journeys →
 11 Analytics + Events → 12 Deliverability → 13 SMS → 14 WhatsApp → 15 Integrations/Webhooks/API → 16 AI →
 17 Performance + Security → 18 Testing → 19 Deployment.

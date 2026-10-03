@@ -42,12 +42,16 @@ User (platform principal) ── sessions, security log, idempotency keys (user-
 | `workspaces` | organization | A workspace is a child of its organization. |
 | `workspace_settings` | **workspace** | First workspace-owned table; proves workspace-level RLS. |
 | `audit_logs` | organization, append-only | `workspace_id` is optional context, not the owner. |
-| `domain_events` | organization, append-only | `workspace_id` is set when the aggregate is workspace-owned. |
+| `domain_events` | organization, append-only | `workspace_id` is set when the aggregate is workspace-owned. Since Phase 5 the RLS policy also hides workspace-scoped events from other workspaces of the same organization (contact timelines). |
 | `provider_message_routes` | organization (written by tenant), platform lookup | Inbound callbacks resolve their tenant here via `app.resolve_provider_message()`. |
-| Contacts, contact identities, custom fields, lists, segments, tags, topics, suppressions *(Phase 5)* | workspace | Tags and topics are per workspace, so brands stay separate. |
-| Consent events and consent state *(Phase 5)* | workspace, append-only | Retention policy: organization, with workspace override (spec M8). |
-| Consent texts (versioned) *(Phase 5)* | workspace | Immutable once used. |
-| Scoring rules *(Phase 5)* | workspace | |
+| `contacts`, `contact_identities`, `custom_field_definitions` *(Phase 5 ✅)* | workspace | Identity uniqueness is per workspace: the same email may be a contact in two brands. |
+| `lists`, `list_memberships`, `tags`, `contact_tags` *(Phase 5 ✅)* | workspace | Composite FKs `(org_id, workspace_id, …)` make cross-workspace links impossible. |
+| `topics`, `contact_topic_preferences` *(Phase 5 ✅)* | workspace | Tags and topics are per workspace, so brands stay separate. |
+| `consent_events` *(Phase 5 ✅)* | workspace, **append-only** | No UPDATE/DELETE grant; update trigger; deleted only by `app.purge_consent_evidence()` for the current workspace. |
+| `consent_states`, `consent_retention_policies` *(Phase 5 ✅)* | workspace | Retention is per workspace (an organization default is a later addition). |
+| `suppressions` *(Phase 5 ✅)* | workspace | UPDATE only on the lift columns. |
+| `contact_imports`, `contact_import_issues` *(Phase 5 ✅)* | workspace | Files stored under `imports/{workspaceId}/{importId}.csv`. |
+| Segments *(Phase 6)*, consent texts *(Phase 20)*, scoring rules *(later)* | workspace | Moved out of Phase 5 scope. |
 | Campaigns, campaign versions, send runs, deliveries *(6, 9)* | workspace | |
 | Templates, assets, brand kit *(7, 8)* | workspace | A shared organization-level library is a possible later addition (org-owned, read by workspaces). |
 | Journeys, versions, enrollments, step runs *(10)* | workspace | |
@@ -152,3 +156,6 @@ Organization:             active → deleted (soft; every member loses access im
 | Every route has an access policy, and anonymous callers get 401 | `apps/api/test/routes.test.ts` |
 | Jobs keep tenant context | `apps/worker/test/tenant-job.test.ts` |
 | Browser: viewer cannot see admin controls; the API refuses the direct call; removal ends access | `apps/e2e/tests/phase4.spec.ts` |
+| Phase 5 tables: workspace isolation for every audience table, composite FKs, immutable evidence, suppression lift-only updates, workspace-scoped domain events, purge bound to the current workspace, search function bound to the caller's workspace | `packages/db/test/audience-rls.test.ts`, `audience-queries.test.ts` |
+| HTTP: other organization → 404; workspace A ids through workspace B → 404 (no IDOR); viewer/editor denials audited | `apps/api/test/audience.test.ts` |
+| Browser: a second workspace sees none of the first one's contacts; a viewer cannot change contacts and the API refuses direct calls | `apps/e2e/tests/phase5.spec.ts` |

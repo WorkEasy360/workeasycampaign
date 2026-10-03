@@ -71,6 +71,18 @@ apps/worker ─▶ tenant-job wrapper ─▶ application code ─▶ @workeasy/d
 Other Workeasy products ─▶ public API (Phase 15) and integration events only — never the database
 ```
 
+### API modules (Phase 5)
+
+| Module | Owns |
+|---|---|
+| `identity`, `tenancy`, `audit`, `events` | Phase 4 (sessions, organizations, workspaces, RBAC, audit log, domain events) |
+| `audience` | contacts, identities, custom fields, lists, tags, topics, consent, suppression, eligibility, bulk actions, imports (`docs/audience.md`) |
+
+Shared infrastructure added in Phase 5:
+- **`FileStore`** (`apps/api/src/infrastructure/files`): streaming save with a byte limit, server-generated keys confined to `FILE_STORE_DIR`. Local disk today; S3/MinIO behind the same interface later.
+- **`JobDispatcher`** (`apps/api/src/common/jobs.ts`): `InlineJobDispatcher` runs jobs in-process after the response, and shutdown waits for them. Jobs use the worker's tenant-job envelope, so moving them to BullMQ changes only the dispatcher. Redis/BullMQ execution is not yet exercised.
+- **Search** goes through `app.search_contact_ids()`, a workspace-bound definer function, because PostgreSQL will not use a trigram index for a non-leakproof `ILIKE` under RLS (`docs/audience.md` §7).
+
 **Rule: the API never sends messages; the worker sends.** The API depends on `packages/channels` only for verifying
 and parsing provider callbacks and for test sends.
 
@@ -165,13 +177,15 @@ correlation, causation, idempotency key, payload. Every event store is append-on
 
 | Path | Mode |
 |---|---|
-| Imports | Async, batched |
+| Imports | Streamed, dry run first, then chunks of 250 with a resumable checkpoint (`docs/imports.md`) |
+| Contact search | Trigram index via a definer function; at most 1,000 matches, then the UI asks to refine |
+| Bulk actions | Server-side chunks of 500; "all matching" capped at 10,000 |
 | Segment counts | Cached and estimated |
 | Recipient generation | Set-based, chunked |
 | Sending | Queued and rate-limited |
 | Callbacks | Accept then process |
 | Analytics | Precomputed rollups |
-| Timeline | Indexed keyset |
+| Timeline | Indexed keyset over `domain_events` by (workspace, aggregate) |
 | Scoring | Event-driven + nightly decay |
 | Journeys | Durable queue |
 

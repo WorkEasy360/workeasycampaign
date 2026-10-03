@@ -55,6 +55,12 @@ analytics events have their contracts and storage design fixed here and are buil
 `membership.added/role_changed/status_changed`, `workspace_membership.added/role_changed/removed`,
 `invitation.created/revoked/accepted`, `role.created/updated/deleted`.
 
+**Phase 5 domain events** (aggregate in brackets):
+- [contact] `contact.created/updated/deleted/restored/erased`, `contact.subscription_changed`, `contact.identity_added/identity_removed`, `list.member_added/member_removed`, `contact.tagged/untagged`, `contact.topic_subscribed/topic_unsubscribed`, `consent.recorded`
+- [list] `list.created/updated/archived/restored/deleted` · [tag] `tag.created/updated/deleted` · [topic] `topic.created/updated/archived/restored/default_changed` · [custom_field] `custom_field.created/updated/archived/restored/deleted` · [suppression] `suppression.added/lifted` (payload carries `contactId` when the target is a contact) · [import] `import.started/completed/failed`
+
+Membership changes use the **contact** as aggregate, so a contact's timeline is a keyset query over `domain_events` by (workspace, aggregate). Suppressions are their own aggregate and show on the contact page's do-not-contact card rather than in the timeline. Bulk actions and imports write one event per affected contact in batches (`appendDomainEvents`) in the same transaction as the change. Payloads carry ids and changed field names, never personal data, so erasure does not need to rewrite events.
+
 **Verified by test.** Creating an organization writes four domain events that share one correlation id (`apps/api/test/tenancy.test.ts`).
 
 ## Analytics events (Phase 11 design)
