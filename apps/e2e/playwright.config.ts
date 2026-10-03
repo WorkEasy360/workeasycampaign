@@ -1,4 +1,5 @@
-import { resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { defineConfig, devices } from '@playwright/test';
 import { testDatabaseUrls } from '@workeasy/db/testing';
 
@@ -39,6 +40,9 @@ export default defineConfig({
         TRUST_PROXY: 'loopback',
         MAIL_TRANSPORT: 'file',
         MAIL_FILE_DIR: MAIL_DIR,
+        DATA_FINGERPRINT_SECRET: 'e2e-fingerprint-e2e-fingerprint-e2e-fp',
+        // Uploaded CSVs stay out of the (synced) repository.
+        FILE_STORE_DIR: join(tmpdir(), 'workeasy-e2e-files'),
       },
     },
     {
