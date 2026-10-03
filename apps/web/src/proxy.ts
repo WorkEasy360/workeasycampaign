@@ -2,9 +2,9 @@ import { type NextRequest, NextResponse } from 'next/server';
 
 /**
  * UX only: visitors without a session cookie go straight to /login instead of seeing a spinner.
- * This is NOT authorization — the cookie is not validated here; the API validates it on every request.
+ * This is NOT authorization â€” the cookie is not validated here; the API validates it on every request.
  */
-const APP_PREFIXES = ['/dashboard', '/organizations', '/workspaces', '/settings', '/onboarding'];
+const APP_PREFIXES = ['/dashboard', '/organizations', '/workspaces', '/settings', '/onboarding', '/contacts', '/audience', '/imports'];
 
 export function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
@@ -19,5 +19,5 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/dashboard/:path*', '/organizations/:path*', '/workspaces/:path*', '/settings/:path*', '/onboarding/:path*'],
+  matcher: ['/dashboard/:path*', '/organizations/:path*', '/workspaces/:path*', '/settings/:path*', '/onboarding/:path*', '/contacts/:path*', '/audience/:path*', '/imports/:path*'],
 };

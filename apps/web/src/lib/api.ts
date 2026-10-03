@@ -40,6 +40,8 @@ export function refreshCsrf(): Promise<string> {
 
 export interface RequestOptions {
   body?: unknown;
+  /** Sent as-is instead of JSON (e.g. a CSV file); requires an explicit content type in headers. */
+  rawBody?: Blob;
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -60,7 +62,7 @@ export async function api<T = unknown>(method: string, path: string, opts: Reque
     res = await fetch(`${BASE}${path}`, {
       method,
       headers,
-      body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+      body: opts.rawBody ?? (opts.body === undefined ? undefined : JSON.stringify(opts.body)),
       credentials: 'same-origin',
       cache: 'no-store',
       signal: opts.signal,
@@ -88,6 +90,7 @@ export const http = {
   put: <T>(path: string, body: unknown) => api<T>('PUT', path, { body }),
   patch: <T>(path: string, body: unknown) => api<T>('PATCH', path, { body }),
   delete: <T>(path: string, body?: unknown) => api<T>('DELETE', path, { body }),
+  upload: <T>(path: string, file: Blob, contentType: string) => api<T>('POST', path, { rawBody: file, headers: { 'content-type': contentType } }),
 };
 
 /** New idempotency key per user action (retries of the same action reuse it). */

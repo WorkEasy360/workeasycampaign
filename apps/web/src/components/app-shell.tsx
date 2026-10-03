@@ -25,9 +25,9 @@ import { Logo } from './brand';
 import { Avatar, Badge, useToast } from './ui';
 import { useContextSafe } from './use-context-safe';
 
-const NAV = [
+const NAV: { href: string; label: string; icon: typeof Users; soon?: boolean; match?: string[] }[] = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { href: '#contacts', label: 'Contacts', icon: Users, soon: true },
+  { href: '/contacts', label: 'Audience', icon: Users, match: ['/contacts', '/audience', '/imports'] },
   { href: '#campaigns', label: 'Campaigns', icon: Mail, soon: true },
   { href: '#journeys', label: 'Journeys', icon: GitBranch, soon: true },
   { href: '#reports', label: 'Reports', icon: BarChart3, soon: true },
@@ -46,8 +46,8 @@ export function AppShell({ children }: { children: ReactNode }) {
       </div>
       <ContextSwitcher />
       <ul className="mt-4 space-y-0.5">
-        {NAV.map(({ href, label, icon: Icon, soon }) => {
-          const active = !soon && (pathname === href || pathname.startsWith(`${href}/`));
+        {NAV.map(({ href, label, icon: Icon, soon, match }) => {
+          const active = !soon && (match ?? [href]).some((m) => pathname === m || pathname.startsWith(`${m}/`));
           return (
             <li key={label}>
               {soon ? (
