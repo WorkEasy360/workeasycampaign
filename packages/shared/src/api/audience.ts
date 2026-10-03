@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { CHANNELS, type Channel } from '../channels.js';
-import type { EligibilityResult, IneligibilityReason } from '../eligibility.js';
+import type { EligibilityRequest, EligibilityResponse, EligibilityResult, IneligibilityReason } from '../eligibility.js';
 
 // ─── enums ──────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -117,7 +117,12 @@ export const recordConsentRequest = z.object({
   action: z.enum(CONSENT_ACTIONS),
   lawfulBasis: z.enum(LAWFUL_BASES).optional(),
   source: z.enum(ADMIN_CONSENT_SOURCES),
-  occurredAt: z.iso.datetime({ offset: true }).optional(),
+  /** When it happened (e.g. the date on a paper form). May be in the past, never in the future. */
+  occurredAt: z.iso
+    .datetime({ offset: true })
+    .refine((v) => Date.parse(v) <= Date.now() + 5 * 60_000, { error: 'The date cannot be in the future' })
+    .refine((v) => Date.parse(v) >= Date.parse('2000-01-01T00:00:00Z'), { error: 'Enter a realistic date' })
+    .optional(),
   consentTextVersion: optText(100),
   formId: optText(100),
   formVersion: optText(50),
@@ -322,10 +327,16 @@ export interface IdentityView {
 
 export interface ConsentStateView {
   channel: Channel;
-  state: 'granted' | 'pending' | 'withdrawn' | 'none';
+  /** `expired`: a pending (double opt-in) request older than the workspace's pending-expiry period. Derived, not stored. */
+  state: 'granted' | 'pending' | 'expired' | 'withdrawn' | 'none';
   changedBy: 'contact' | 'user' | 'system' | null;
   lawfulBasis: LawfulBasis | null;
   changedAt: string | null;
+  /**
+   * Whether the state was recorded for the contact's CURRENT primary address of this channel. Consent given for
+   * another address does not count (CONSENT_ADDRESS_CHANGED). Null when there is no state.
+   */
+  appliesToPrimaryAddress: boolean | null;
 }
 
 export interface TopicPreferenceView {
@@ -495,4 +506,4 @@ export interface ImportIssueView {
   severity: 'error' | 'warning';
 }
 
-export type { EligibilityResult, IneligibilityReason };
+export type { EligibilityRequest, EligibilityResponse, EligibilityResult, IneligibilityReason };

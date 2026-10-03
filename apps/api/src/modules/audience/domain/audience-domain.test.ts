@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canChangeSubscription, evidenceProblems, nextChannelState, nextTopicState } from './consent.js';
+import { canChangeSubscription, effectiveChannelState, evidenceProblems, nextChannelState, nextTopicState } from './consent.js';
 import { definitionProblems, type FieldDefinition, validateFieldValue } from './custom-fields.js';
 import { evaluateEligibility, type EligibilityFacts } from './eligibility.js';
 import { csvSafe, decideRow, suggestMapping } from './import-decision.js';
@@ -135,13 +135,35 @@ describe('consent state machine', () => {
     expect(evidenceProblems('subscribed', 'user', 'consent', 'Signed form at event', undefined)).toEqual([]);
     expect(evidenceProblems('unsubscribed', 'user', undefined, undefined, undefined)).toEqual([]);
   });
+
+  it('records an explicit unsubscribe even when nothing was granted, so the opt-out is evidence and sticky', () => {
+    expect(nextChannelState('none', null, 'unsubscribed', 'contact')).toEqual({ ok: true, newState: 'withdrawn' });
+    // ...and once the contact said no themselves, staff cannot grant for them.
+    expect(nextChannelState('withdrawn', 'contact', 'subscribed', 'user')).toMatchObject({ code: 'SELF_UNSUBSCRIBED' });
+    // A staff "revoke" with nothing to revoke stays a no-op.
+    expect(nextChannelState('none', null, 'revoked', 'user')).toMatchObject({ code: 'NO_CHANGE' });
+  });
+
+  it('pending consent expires after the policy period, measured from server time', () => {
+    const recorded = new Date('2026-01-01T00:00:00Z');
+    expect(effectiveChannelState('pending', recorded, 7, new Date('2026-01-07T23:59:00Z'))).toBe('pending');
+    expect(effectiveChannelState('pending', recorded, 7, new Date('2026-01-08T00:01:00Z'))).toBe('expired');
+    expect(effectiveChannelState('granted', recorded, 7, new Date('2027-01-01T00:00:00Z'))).toBe('granted');
+  });
+
+  it('an expired request cannot be confirmed; a new request or a grant starts over', () => {
+    expect(nextChannelState('expired', 'user', 'confirmed', 'contact')).toMatchObject({ ok: false, code: 'INVALID_TRANSITION' });
+    expect(nextChannelState('expired', 'user', 'pending', 'user')).toEqual({ ok: true, newState: 'pending' });
+    expect(nextChannelState('expired', 'user', 'subscribed', 'contact')).toEqual({ ok: true, newState: 'granted' });
+    expect(nextChannelState('expired', 'user', 'unsubscribed', 'contact')).toEqual({ ok: true, newState: 'withdrawn' });
+  });
 });
 
 const facts = (over: Partial<EligibilityFacts> = {}): EligibilityFacts => ({
   contact: { id: 'c', deleted: false, erased: false, subscriptionType: 'marketing' },
   addresses: ['a@b.co'],
   suppressions: [],
-  consent: { state: 'granted' },
+  consent: { state: 'granted', forCurrentAddress: true },
   ...over,
 });
 const codes = (r: { reasons: { code: string }[] }) => r.reasons.map((x) => x.code);
@@ -153,7 +175,7 @@ describe('eligibility engine', () => {
 
   it('reports every failing check, most fundamental first', () => {
     const r = evaluateEligibility(
-      facts({ contact: { id: 'c', deleted: false, erased: false, subscriptionType: 'unsubscribed' }, suppressions: [{ channel: 'all', reason: 'manual' }], consent: { state: 'none' }, topic: { status: 'active', preference: 'none' } }),
+      facts({ contact: { id: 'c', deleted: false, erased: false, subscriptionType: 'unsubscribed' }, suppressions: [{ channel: 'all', reason: 'manual' }], consent: { state: 'none', forCurrentAddress: true }, topic: { status: 'active', preference: 'none' } }),
       { channel: 'email', purpose: 'marketing', topicId: 't' },
     );
     expect(r.eligible).toBe(false);
@@ -167,7 +189,7 @@ describe('eligibility engine', () => {
   });
 
   it('transactional messages skip marketing checks but never suppression', () => {
-    const f = facts({ contact: { id: 'c', deleted: false, erased: false, subscriptionType: 'unsubscribed' }, consent: { state: 'withdrawn' } });
+    const f = facts({ contact: { id: 'c', deleted: false, erased: false, subscriptionType: 'unsubscribed' }, consent: { state: 'withdrawn', forCurrentAddress: true } });
     expect(evaluateEligibility(f, { channel: 'email', purpose: 'transactional', topicId: null }).eligible).toBe(true);
     const suppressed = facts({ suppressions: [{ channel: 'email', reason: 'compliance' }] });
     expect(codes(evaluateEligibility(suppressed, { channel: 'email', purpose: 'transactional', topicId: null }))).toEqual(['SUPPRESSED']);
@@ -176,9 +198,19 @@ describe('eligibility engine', () => {
   it('deleted contacts, missing addresses, pending/withdrawn consent and archived topics are reported', () => {
     expect(codes(evaluateEligibility(facts({ contact: { id: 'c', deleted: true, erased: false, subscriptionType: 'marketing' } }), { channel: 'email', purpose: 'marketing', topicId: null }))).toEqual(['CONTACT_DELETED']);
     expect(codes(evaluateEligibility(facts({ addresses: [] }), { channel: 'sms', purpose: 'marketing', topicId: null }))).toEqual(['NO_ADDRESS']);
-    expect(codes(evaluateEligibility(facts({ consent: { state: 'pending' } }), { channel: 'email', purpose: 'marketing', topicId: null }))).toEqual(['CONSENT_PENDING']);
-    expect(codes(evaluateEligibility(facts({ consent: { state: 'withdrawn' } }), { channel: 'email', purpose: 'marketing', topicId: null }))).toEqual(['CONSENT_WITHDRAWN']);
+    expect(codes(evaluateEligibility(facts({ consent: { state: 'pending', forCurrentAddress: true } }), { channel: 'email', purpose: 'marketing', topicId: null }))).toEqual(['CONSENT_PENDING']);
+    expect(codes(evaluateEligibility(facts({ consent: { state: 'withdrawn', forCurrentAddress: true } }), { channel: 'email', purpose: 'marketing', topicId: null }))).toEqual(['CONSENT_WITHDRAWN']);
     expect(codes(evaluateEligibility(facts({ topic: { status: 'archived', preference: 'subscribed' } }), { channel: 'email', purpose: 'marketing', topicId: 't' }))).toEqual(['TOPIC_INACTIVE']);
+  });
+
+  it('consent given for another address does not count; an expired request never qualifies', () => {
+    const m = { channel: 'email', purpose: 'marketing', topicId: null } as const;
+    expect(codes(evaluateEligibility(facts({ consent: { state: 'granted', forCurrentAddress: false } }), m))).toEqual(['CONSENT_ADDRESS_CHANGED']);
+    expect(codes(evaluateEligibility(facts({ consent: { state: 'expired', forCurrentAddress: true } }), m))).toEqual(['CONSENT_EXPIRED']);
+    // A withdrawal blocks every address of the channel, whichever address it was made for.
+    expect(codes(evaluateEligibility(facts({ consent: { state: 'withdrawn', forCurrentAddress: false } }), m))).toEqual(['CONSENT_WITHDRAWN']);
+    // Transactional messages do not depend on marketing consent.
+    expect(evaluateEligibility(facts({ consent: { state: 'granted', forCurrentAddress: false } }), { ...m, purpose: 'transactional' }).eligible).toBe(true);
   });
 });
 

@@ -13,7 +13,11 @@ export interface EligibilityFacts {
   addresses: string[];
   /** Active suppressions that apply to this contact or any of its addresses, for this channel or "all". */
   suppressions: { channel: string; reason: string }[];
-  consent: { state: 'none' | 'pending' | 'granted' | 'withdrawn' };
+  /**
+   * Effective channel consent (pending past its expiry is 'expired'), and whether it was recorded for the contact's
+   * current primary address of this channel (false when the address changed since; true when there is no address).
+   */
+  consent: { state: 'none' | 'pending' | 'expired' | 'granted' | 'withdrawn'; forCurrentAddress: boolean };
   /** Present when the request names a topic. */
   topic?: { status: 'active' | 'archived' | 'missing'; preference: 'subscribed' | 'unsubscribed' | 'none' };
 }
@@ -32,7 +36,9 @@ const MESSAGES: Record<IneligibilityReason, string> = {
   SUPPRESSED: 'The contact or address is on the do-not-contact list',
   CONSENT_MISSING: 'No consent recorded for this channel',
   CONSENT_PENDING: 'Consent is waiting for confirmation (double opt-in)',
+  CONSENT_EXPIRED: 'The consent request expired without confirmation',
   CONSENT_WITHDRAWN: 'Consent for this channel was withdrawn',
+  CONSENT_ADDRESS_CHANGED: 'Consent was given for a different address than the current one',
   TOPIC_NOT_SUBSCRIBED: 'The contact is not subscribed to this topic',
   TOPIC_INACTIVE: 'The topic is archived or does not exist',
   FREQUENCY_CAP: 'Frequency cap reached',
@@ -64,7 +70,10 @@ export function evaluateEligibility(f: EligibilityFacts, req: EligibilityRequest
   if (marketing) {
     if (f.consent.state === 'none') reasons.push('CONSENT_MISSING');
     if (f.consent.state === 'pending') reasons.push('CONSENT_PENDING');
+    if (f.consent.state === 'expired') reasons.push('CONSENT_EXPIRED');
     if (f.consent.state === 'withdrawn') reasons.push('CONSENT_WITHDRAWN');
+    // Consent is bound to the address it was given for [OUR_ORIGINAL_DESIGN]; a withdrawal blocks every address.
+    if (f.consent.state === 'granted' && !f.consent.forCurrentAddress) reasons.push('CONSENT_ADDRESS_CHANGED');
   }
   // Topic subscription [ZOHO_PARITY]: a campaign reaches only subscribers of its topic.
   if (req.topicId && f.topic) {

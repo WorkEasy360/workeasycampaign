@@ -8,7 +8,17 @@ import type { AppConfig } from '../../../config/env.js';
 import { APP_CONFIG, DATABASE } from '../../../infrastructure/providers.js';
 import { hmac } from '../../../infrastructure/tokens.js';
 import { inTenant, type TenantUnitOfWork } from '../../tenancy/application/tenant-tx.js';
-import { type ActorType, type ChannelState, changedByOf, evidenceProblems, nextChannelState, nextTopicState, type TopicState } from '../domain/consent.js';
+import {
+  type ActorType,
+  type ChannelState,
+  changedByOf,
+  effectiveChannelState,
+  evidenceProblems,
+  nextChannelState,
+  nextTopicState,
+  type StoredChannelState,
+  type TopicState,
+} from '../domain/consent.js';
 import { CHANNEL_IDENTITY_KIND, requireLiveContact } from './audience-support.js';
 
 /** Defaults when a workspace has no explicit policy (docs/consent.md §Retention). Proposed, configurable. */
@@ -36,8 +46,16 @@ export interface ConsentInput {
  */
 export async function recordChannelConsent(uow: TenantUnitOfWork, fingerprintSecret: string, orgId: string, workspaceId: string, contactId: string, input: ConsentInput) {
   const { tx } = uow;
+  const now = new Date();
+  // Evidence may describe the past (a paper form signed last week), never the future (also a DB CHECK).
+  if (input.occurredAt && input.occurredAt.getTime() > now.getTime() + 5 * 60_000) {
+    throw Errors.validation({ occurredAt: ['The date cannot be in the future'] });
+  }
   const current = await tx.consentState.findUnique({ where: { contactId_channel: { contactId, channel: input.channel } } });
-  const t = nextChannelState((current?.state ?? 'none') as ChannelState, (current?.changedBy ?? null) as never, input.action, input.actor.type);
+  const effective = current
+    ? effectiveChannelState(current.state as StoredChannelState, current.recordedAt, await pendingExpiryDays(tx, workspaceId), now)
+    : 'none';
+  const t = nextChannelState(effective, (current?.changedBy ?? null) as never, input.action, input.actor.type);
   if (!t.ok) {
     if (t.code === 'NO_CHANGE') return null;
     throw new AppError('precondition_failed', 422, t.message, { action: [t.code] });
@@ -51,7 +69,7 @@ export async function recordChannelConsent(uow: TenantUnitOfWork, fingerprintSec
       channel: ['NO_ADDRESS'],
     });
   }
-  const now = new Date();
+  const subjectFingerprint = address ? fingerprint(fingerprintSecret, input.channel, address.valueNormalized) : null;
   const ev = await tx.consentEvent.create({
     data: {
       orgId,
@@ -65,7 +83,7 @@ export async function recordChannelConsent(uow: TenantUnitOfWork, fingerprintSec
       source: input.source,
       actorType: input.actor.type,
       actorId: input.actor.id,
-      subjectFingerprint: address ? fingerprint(fingerprintSecret, input.channel, address.valueNormalized) : null,
+      subjectFingerprint,
       ipAddress: input.ipAddress ?? null,
       userAgent: input.userAgent ?? null,
       consentTextVersion: input.consentTextVersion ?? null,
@@ -82,6 +100,10 @@ export async function recordChannelConsent(uow: TenantUnitOfWork, fingerprintSec
     lawfulBasis: input.lawfulBasis ?? current?.lawfulBasis ?? null,
     lastEventId: ev.id,
     changedAt: input.occurredAt ?? now,
+    // Server time: retention and pending expiry are measured from here, never from the client-supplied date.
+    recordedAt: ev.recordedAt,
+    // The address this state applies to. Withdrawals keep the address they were made for too, but block every address.
+    subjectFingerprint,
   };
   if (current) await tx.consentState.update({ where: { contactId_channel: { contactId, channel: input.channel } }, data: projection });
   else await tx.consentState.create({ data: { orgId, workspaceId, contactId, channel: input.channel, ...projection } });
@@ -139,6 +161,45 @@ export async function recordTopicPreference(
 /** Keyed hash of a channel address: identifies the subject of evidence without storing the address itself. */
 export function fingerprint(secret: string, channel: string, valueNormalized: string): string {
   return hmac(secret, 'consent-subject', channel, valueNormalized);
+}
+
+/** The workspace's pending-consent expiry (policy, or the documented default). */
+export async function pendingExpiryDays(tx: Tx, workspaceId: string): Promise<number> {
+  const p = await tx.consentRetentionPolicy.findUnique({ where: { workspaceId }, select: { pendingExpiryDays: true } });
+  return p?.pendingExpiryDays ?? DEFAULT_RETENTION.pendingExpiryDays;
+}
+
+/**
+ * Effective consent per contact for one channel, as eligibility and the contact page must see it: pending past its
+ * expiry is `expired`, and `forCurrentAddress` says whether the state was recorded for the contact's current primary
+ * address of the channel (docs/consent.md §Address binding). Loads everything in a fixed number of queries.
+ */
+export async function effectiveConsent(
+  tx: Tx,
+  secret: string,
+  workspaceId: string,
+  channel: Channel,
+  contactIds: string[],
+  primaryByContact: Map<string, string>,
+): Promise<Map<string, { state: ChannelState; forCurrentAddress: boolean; changedBy: string; lawfulBasis: string | null; changedAt: Date }>> {
+  const out = new Map<string, { state: ChannelState; forCurrentAddress: boolean; changedBy: string; lawfulBasis: string | null; changedAt: Date }>();
+  if (!contactIds.length) return out;
+  const states = await tx.consentState.findMany({ where: { contactId: { in: contactIds }, channel } });
+  if (!states.length) return out;
+  const days = await pendingExpiryDays(tx, workspaceId);
+  const now = new Date();
+  for (const s of states) {
+    const primary = primaryByContact.get(s.contactId);
+    out.set(s.contactId, {
+      state: effectiveChannelState(s.state as StoredChannelState, s.recordedAt, days, now),
+      // No primary address → nothing to compare (NO_ADDRESS reports that); otherwise the fingerprints must match.
+      forCurrentAddress: primary === undefined || (s.subjectFingerprint !== null && s.subjectFingerprint === fingerprint(secret, channel, primary)),
+      changedBy: s.changedBy,
+      lawfulBasis: s.lawfulBasis,
+      changedAt: s.changedAt,
+    });
+  }
+  return out;
 }
 
 @Injectable()

@@ -262,15 +262,16 @@ describe('consent retention purge', () => {
       await c.query(`INSERT INTO contacts (id, org_id, workspace_id) VALUES ($1, $2, $3)`, [withdrawnContact, ids.orgA, ids.a1]);
       const e1 = id();
       const e2 = id();
+      // Evidence genuinely RECORDED in the past (server time), as retention is measured from recorded_at.
       await c.query(
-        `INSERT INTO consent_events (id, org_id, workspace_id, contact_id, channel, action, previous_state, new_state, source, actor_type, correlation_id, occurred_at)
-         VALUES ($1, $3, $4, $5, 'email', 'subscribed', 'none', 'granted', 'admin', 'user', $6, now() - interval '3 days'),
-                ($2, $3, $4, $5, 'email', 'unsubscribed', 'granted', 'withdrawn', 'admin', 'contact', $6, now() - interval '2 days')`,
+        `INSERT INTO consent_events (id, org_id, workspace_id, contact_id, channel, action, previous_state, new_state, source, actor_type, correlation_id, occurred_at, recorded_at)
+         VALUES ($1, $3, $4, $5, 'email', 'subscribed', 'none', 'granted', 'admin', 'user', $6, now() - interval '3 days', now() - interval '3 days'),
+                ($2, $3, $4, $5, 'email', 'unsubscribed', 'granted', 'withdrawn', 'admin', 'contact', $6, now() - interval '2 days', now() - interval '2 days')`,
         [e1, e2, ids.orgA, ids.a1, withdrawnContact, id()],
       );
       await c.query(
-        `INSERT INTO consent_states (org_id, workspace_id, contact_id, channel, state, changed_by, last_event_id, changed_at)
-         VALUES ($1, $2, $3, 'email', 'withdrawn', 'contact', $4, now() - interval '2 days')`,
+        `INSERT INTO consent_states (org_id, workspace_id, contact_id, channel, state, changed_by, last_event_id, changed_at, recorded_at)
+         VALUES ($1, $2, $3, 'email', 'withdrawn', 'contact', $4, now() - interval '2 days', now() - interval '2 days')`,
         [ids.orgA, ids.a1, withdrawnContact, e2],
       );
       await c.query(
@@ -282,6 +283,44 @@ describe('consent retention purge', () => {
     expect(purged[0]!.n).toBe(2);
     const left = await db.withTenant(A1(), (tx) => tx.consentEvent.findMany({ select: { id: true } }));
     expect(left.map((e) => e.id)).toEqual([ids.consentEventA1]);
+  });
+
+  it('a backdated evidence date alone never makes evidence purgeable (retention runs on server time)', async () => {
+    const backdated = id();
+    const ev = [id(), id()];
+    await withOwnerConnection(async (c) => {
+      await c.query(`INSERT INTO contacts (id, org_id, workspace_id) VALUES ($1, $2, $3)`, [backdated, ids.orgA, ids.a1]);
+      // Dated years ago by the person recording it, but recorded just now.
+      await c.query(
+        `INSERT INTO consent_events (id, org_id, workspace_id, contact_id, channel, action, previous_state, new_state, source, actor_type, correlation_id, occurred_at)
+         VALUES ($1, $3, $4, $5, 'email', 'subscribed', 'none', 'granted', 'paper', 'user', $6, '2015-01-01'),
+                ($2, $3, $4, $5, 'email', 'revoked', 'granted', 'withdrawn', 'admin', 'user', $6, '2016-01-01')`,
+        [ev[0], ev[1], ids.orgA, ids.a1, backdated, id()],
+      );
+      await c.query(
+        `INSERT INTO consent_states (org_id, workspace_id, contact_id, channel, state, changed_by, last_event_id, changed_at)
+         VALUES ($1, $2, $3, 'email', 'withdrawn', 'user', $4, '2016-01-01')`,
+        [ids.orgA, ids.a1, backdated, ev[1]],
+      );
+    });
+    const purged = await db.withTenant(A1(), (tx) => tx.$queryRaw<{ n: number }[]>`SELECT app.purge_consent_evidence(${ids.a1}::uuid) AS n`);
+    expect(purged[0]!.n).toBe(0);
+    const kept = await db.withTenant(A1(), (tx) => tx.consentEvent.count({ where: { contactId: backdated } }));
+    expect(kept).toBe(2);
+  });
+
+  it('evidence cannot be dated in the future, even by the owner role', async () => {
+    const r = await withOwnerConnection((c) =>
+      c
+        .query(
+          `INSERT INTO consent_events (id, org_id, workspace_id, contact_id, channel, action, previous_state, new_state, source, actor_type, correlation_id, occurred_at)
+           SELECT gen_random_uuid(), org_id, workspace_id, id, 'email', 'subscribed', 'none', 'granted', 'admin', 'user', gen_random_uuid(), now() + interval '1 day'
+           FROM contacts WHERE workspace_id = $1 LIMIT 1`,
+          [ids.a1],
+        )
+        .then(() => 'inserted', (e: { code?: string }) => e.code),
+    );
+    expect(r).toBe('23514');
   });
 
   it('a NULL retention keeps evidence indefinitely', async () => {

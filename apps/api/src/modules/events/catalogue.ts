@@ -38,6 +38,7 @@ export const DOMAIN_EVENTS = {
   'contact.subscription_changed': { version: 1, aggregate: 'contact', payload: z.object({ from: z.string(), to: z.string(), by: z.string() }) },
   'contact.identity_added': { version: 1, aggregate: 'contact', payload: z.object({ identityId: id, kind: z.string() }) },
   'contact.identity_removed': { version: 1, aggregate: 'contact', payload: z.object({ identityId: id, kind: z.string() }) },
+  'contact.primary_identity_changed': { version: 1, aggregate: 'contact', payload: z.object({ identityId: id, kind: z.string() }) },
   'list.created': { version: 1, aggregate: 'list', payload: z.object({ name: z.string() }) },
   'list.updated': { version: 1, aggregate: 'list', payload: z.object({ changes: z.array(z.string()) }) },
   'list.archived': { version: 1, aggregate: 'list', payload: z.object({}) },

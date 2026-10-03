@@ -128,10 +128,14 @@ export class BulkService {
         return changing.length;
       }
       case 'delete': {
+        // Only contacts still live at this moment are deleted, and only they get an event (a retried or concurrent
+        // bulk delete must not emit contact.deleted twice for the same contact).
+        const live = (await uow.tx.contact.findMany({ where: { id: { in: ids }, deletedAt: null }, select: { id: true } })).map((c) => c.id);
+        if (!live.length) return 0;
         const now = new Date();
-        const r = await uow.tx.contact.updateMany({ where: { id: { in: ids }, deletedAt: null }, data: { deletedAt: now, updatedAt: now, version: { increment: 1 } } });
-        await uow.events('contact.deleted', ids.map((id) => ({ aggregateId: id, payload: {} })));
-        return r.count;
+        await uow.tx.contact.updateMany({ where: { id: { in: live } }, data: { deletedAt: now, updatedAt: now, version: { increment: 1 } } });
+        await uow.events('contact.deleted', live.map((id) => ({ aggregateId: id, payload: {} })));
+        return live.length;
       }
     }
   }

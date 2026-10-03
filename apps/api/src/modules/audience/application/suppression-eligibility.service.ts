@@ -1,10 +1,12 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { type Database, isUniqueViolation, type Tx } from '@workeasy/db';
-import type { Channel, EligibilityResult, MessagePurpose, SuppressionView } from '@workeasy/shared';
+import type { Channel, EligibilityResponse, EligibilityResult, MessagePurpose, SuppressionView } from '@workeasy/shared';
 import { Errors } from '../../../common/errors.js';
 import { decodeCursor, encodeCursor } from '../../../common/pagination.js';
 import type { TenantRequestContext } from '../../../common/request-context.js';
-import { DATABASE } from '../../../infrastructure/providers.js';
+import type { AppConfig } from '../../../config/env.js';
+import { APP_CONFIG, DATABASE } from '../../../infrastructure/providers.js';
+import { effectiveConsent } from './consent.service.js';
 import { inTenant, type TenantUnitOfWork } from '../../tenancy/application/tenant-tx.js';
 import { ADDRESS_KIND_FOR_CHANNEL, evaluateEligibility } from '../domain/eligibility.js';
 import { displayName, normalizeIdentity } from '../domain/normalization.js';
@@ -125,17 +127,31 @@ export class SuppressionService {
  */
 @Injectable()
 export class EligibilityService {
-  constructor(@Inject(DATABASE) private readonly db: Database) {}
+  constructor(
+    @Inject(DATABASE) private readonly db: Database,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
+  ) {}
 
-  async check(ctx: TenantRequestContext, req: { contactIds: string[]; channel: Channel; purpose: MessagePurpose; topicId?: string }) {
-    return inTenant(this.db, ctx, ({ tx }) => this.evaluate(tx, req));
+  async check(ctx: TenantRequestContext, req: { contactIds: string[]; channel: Channel; purpose: MessagePurpose; topicId?: string }): Promise<EligibilityResponse> {
+    return inTenant(this.db, ctx, ({ tx }) => this.evaluate(tx, ctx.access.workspaceId!, req));
   }
 
-  async evaluate(tx: Tx, req: { contactIds: string[]; channel: Channel; purpose: MessagePurpose; topicId?: string }): Promise<{ results: EligibilityResult[]; notFound: string[] }> {
+  /**
+   * Service contract for later senders (docs/eligibility.md): call with a transaction already scoped to the
+   * workspace (RLS), so contacts of other workspaces are simply not found.
+   */
+  async evaluate(tx: Tx, workspaceId: string, req: { contactIds: string[]; channel: Channel; purpose: MessagePurpose; topicId?: string }): Promise<EligibilityResponse> {
     const ids = [...new Set(req.contactIds)];
+    const topic = req.topicId ? await tx.topic.findUnique({ where: { id: req.topicId }, select: { status: true, kind: true } }) : null;
+    // An unknown topic (or one of another workspace — invisible under RLS) is a bad request, not a per-contact reason.
+    if (req.topicId && (!topic || topic.kind !== 'topic')) throw Errors.validation({ topicId: ['No such topic in this workspace'] });
     const contacts = await tx.contact.findMany({ where: { id: { in: ids } }, select: { id: true, deletedAt: true, erasedAt: true, subscriptionType: true } });
     const kind = ADDRESS_KIND_FOR_CHANNEL[req.channel];
-    const identities = await tx.contactIdentity.findMany({ where: { contactId: { in: ids }, kind }, select: { contactId: true, valueNormalized: true } });
+    const identities = await tx.contactIdentity.findMany({
+      where: { contactId: { in: ids }, kind },
+      select: { id: true, contactId: true, valueNormalized: true, isPrimary: true },
+    });
+    const primary = new Map(identities.filter((i) => i.isPrimary).map((i) => [i.contactId, i]));
     const suppressions = await tx.suppression.findMany({
       where: {
         liftedAt: null,
@@ -144,8 +160,14 @@ export class EligibilityService {
       },
       select: { contactId: true, valueNormalized: true, channel: true, reason: true },
     });
-    const consent = await tx.consentState.findMany({ where: { contactId: { in: ids }, channel: req.channel }, select: { contactId: true, state: true } });
-    const topic = req.topicId ? await tx.topic.findUnique({ where: { id: req.topicId }, select: { status: true, kind: true } }) : null;
+    const consent = await effectiveConsent(
+      tx,
+      this.config.fingerprintSecret,
+      workspaceId,
+      req.channel,
+      contacts.map((c) => c.id),
+      new Map([...primary].map(([contactId, i]) => [contactId, i.valueNormalized])),
+    );
     const prefs = req.topicId
       ? await tx.contactTopicPreference.findMany({ where: { contactId: { in: ids }, topicId: req.topicId }, select: { contactId: true, status: true } })
       : [];
@@ -158,17 +180,25 @@ export class EligibilityService {
           contact: { id: c.id, deleted: !!c.deletedAt, erased: !!c.erasedAt, subscriptionType: c.subscriptionType },
           addresses,
           suppressions: applicable,
-          consent: { state: (consent.find((x) => x.contactId === c.id)?.state ?? 'none') as 'none' },
-          topic: req.topicId
-            ? {
-                status: !topic || topic.kind !== 'topic' ? 'missing' : (topic.status as 'active' | 'archived'),
-                preference: (prefs.find((p) => p.contactId === c.id)?.status ?? 'none') as 'none',
-              }
-            : undefined,
+          consent: { state: consent.get(c.id)?.state ?? 'none', forCurrentAddress: consent.get(c.id)?.forCurrentAddress ?? true },
+          topic:
+            req.topicId && topic
+              ? {
+                  status: topic.status as 'active' | 'archived',
+                  preference: (prefs.find((p) => p.contactId === c.id)?.status ?? 'none') as 'none',
+                }
+              : undefined,
         },
         { channel: req.channel, purpose: req.purpose, topicId: req.topicId ?? null },
       );
-      return { contactId: c.id, channel: req.channel, purpose: req.purpose, topicId: req.topicId ?? null, ...r };
+      return {
+        contactId: c.id,
+        channel: req.channel,
+        purpose: req.purpose,
+        topicId: req.topicId ?? null,
+        ...r,
+        addressIdentityId: c.erasedAt ? null : (primary.get(c.id)?.id ?? null),
+      };
     });
     const found = new Set(contacts.map((c) => c.id));
     return { results, notFound: ids.filter((id) => !found.has(id)) };

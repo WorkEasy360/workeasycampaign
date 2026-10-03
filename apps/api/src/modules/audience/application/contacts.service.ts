@@ -14,9 +14,11 @@ import type {
 import { AppError, Errors } from '../../../common/errors.js';
 import { decodeCursor, encodeCursor } from '../../../common/pagination.js';
 import type { TenantRequestContext } from '../../../common/request-context.js';
-import { DATABASE } from '../../../infrastructure/providers.js';
+import type { AppConfig } from '../../../config/env.js';
+import { APP_CONFIG, DATABASE } from '../../../infrastructure/providers.js';
 import { inTenant } from '../../tenancy/application/tenant-tx.js';
-import { canChangeSubscription } from '../domain/consent.js';
+import { canChangeSubscription, effectiveChannelState, type StoredChannelState } from '../domain/consent.js';
+import { ADDRESS_KIND_FOR_CHANNEL } from '../domain/eligibility.js';
 import { buildSearchText, displayName, normalizeIdentity } from '../domain/normalization.js';
 import {
   activeSuppressionsFor,
@@ -32,6 +34,7 @@ import {
   suppressionView,
   throwIfErrors,
 } from './audience-support.js';
+import { fingerprint, pendingExpiryDays } from './consent.service.js';
 
 type IdentityRow = { id: string; kind: string; provider: string; value: string; valueNormalized: string; isPrimary: boolean; createdAt: Date };
 
@@ -43,7 +46,10 @@ function identityConflict(kind: string, contactId: string): AppError {
 
 @Injectable()
 export class ContactsService {
-  constructor(@Inject(DATABASE) private readonly db: Database) {}
+  constructor(
+    @Inject(DATABASE) private readonly db: Database,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
+  ) {}
 
   // ─── queries ──────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -106,6 +112,8 @@ export class ContactsService {
     const suppressions = suppressionIds.length ? await tx.suppression.findMany({ where: { id: { in: suppressionIds } } }) : [];
     const primary = c.identities.filter((i) => i.isPrimary);
     const channels = ['email', 'sms', 'whatsapp'] as const;
+    const expiryDays = c.consentStates.some((x) => x.state === 'pending') ? await pendingExpiryDays(tx, c.workspaceId) : 0;
+    const now = new Date();
     return {
       ...this.summary(c, primary, suppressions.length > 0),
       timezone: c.timezone,
@@ -133,9 +141,13 @@ export class ContactsService {
       })),
       consent: channels.map((channel) => {
         const s = c.consentStates.find((x) => x.channel === channel);
+        const address = primary.find((i) => i.kind === ADDRESS_KIND_FOR_CHANNEL[channel]);
         return {
           channel,
-          state: (s?.state ?? 'none') as 'granted' | 'pending' | 'withdrawn' | 'none',
+          state: s ? effectiveChannelState(s.state as StoredChannelState, s.recordedAt, expiryDays, now) : 'none',
+          appliesToPrimaryAddress: s
+            ? !address || (s.subjectFingerprint !== null && s.subjectFingerprint === fingerprint(this.config.fingerprintSecret, channel, address.valueNormalized))
+            : null,
           changedBy: (s?.changedBy ?? null) as 'contact' | 'user' | 'system' | null,
           lawfulBasis: (s?.lawfulBasis ?? null) as ContactDetail['consent'][number]['lawfulBasis'],
           changedAt: s?.changedAt.toISOString() ?? null,
@@ -181,6 +193,11 @@ export class ContactsService {
   // ─── commands ─────────────────────────────────────────────────────────────────────────────────────────────
 
   async create(ctx: TenantRequestContext, input: CreateContactRequest): Promise<ContactDetail> {
+    // Adding to lists or tags while creating needs the same permissions as doing it afterwards (finding M-3).
+    const denied: Record<string, string[]> = {};
+    if (input.listIds.length && !ctx.access.permissions.has('lists.manage')) denied.listIds = ['Adding contacts to lists needs the lists.manage permission'];
+    if (input.tagIds.length && !ctx.access.permissions.has('tags.manage')) denied.tagIds = ['Tagging contacts needs the tags.manage permission'];
+    if (Object.keys(denied).length) throw new AppError('forbidden', 403, 'You do not have permission to add lists or tags', denied);
     const identities: { kind: 'email' | 'phone'; value: string; normalized: string }[] = [];
     const errors: Record<string, string[]> = {};
     for (const kind of ['email', 'phone'] as const) {
@@ -424,13 +441,16 @@ export class ContactsService {
   }
 
   async makePrimary(ctx: TenantRequestContext, contactId: string, identityId: string) {
-    return inTenant(this.db, ctx, async ({ tx }) => {
+    return inTenant(this.db, ctx, async ({ tx, event }) => {
       await requireLiveContact(tx, contactId);
       const target = await tx.contactIdentity.findFirst({ where: { id: identityId, contactId } });
       if (!target) throw Errors.notFound('Identity');
+      if (target.isPrimary) return this.detail(tx, contactId);
       await tx.contactIdentity.updateMany({ where: { contactId, kind: target.kind }, data: { isPrimary: false } });
       await tx.contactIdentity.update({ where: { id: identityId }, data: { isPrimary: true } });
       await this.touch(tx, contactId);
+      // The send-to address changed: consent recorded for the previous address no longer applies (docs/consent.md).
+      await event('contact.primary_identity_changed', contactId, { identityId, kind: target.kind });
       return this.detail(tx, contactId);
     });
   }

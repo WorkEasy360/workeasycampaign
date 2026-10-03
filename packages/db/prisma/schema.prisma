@@ -699,7 +699,14 @@ model ConsentState {
   changedBy   String   @map("changed_by") // contact | user | system
   lawfulBasis String?  @map("lawful_basis")
   lastEventId String   @map("last_event_id") @db.Uuid
+  /// When the change happened according to the evidence (may be in the past for paper/verbal consent).
   changedAt   DateTime @map("changed_at") @db.Timestamptz(3)
+  /// Server time the current state was recorded. Retention and pending expiry are measured from this, never from
+  /// the client-supplied changedAt, so backdating cannot make evidence purgeable or a request expire early.
+  recordedAt  DateTime @default(now()) @map("recorded_at") @db.Timestamptz(3)
+  /// Keyed hash of the address the current state applies to (docs/consent.md §Address binding). Consent given for
+  /// one address never covers another: eligibility compares it with the current primary address.
+  subjectFingerprint String? @map("subject_fingerprint")
 
   contact Contact @relation(fields: [orgId, workspaceId, contactId], references: [orgId, workspaceId, id], onDelete: Restrict)
 
