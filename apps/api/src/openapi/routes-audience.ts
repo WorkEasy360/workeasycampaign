@@ -27,7 +27,7 @@ import {
   updateTopicRequest,
 } from '@workeasy/shared';
 import { z } from 'zod';
-import type { RouteDoc } from './routes.js';
+import type { RouteDoc } from './route-doc.js';
 
 const W = '/v1/workspaces/{workspaceId}';
 const r = (d: RouteDoc) => d;

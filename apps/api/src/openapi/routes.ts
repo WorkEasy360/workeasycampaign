@@ -22,21 +22,10 @@ import {
   updateWorkspaceRequest,
   verifyEmailRequest,
 } from '@workeasy/shared';
-import type { z } from 'zod';
+import type { RouteDoc } from './route-doc.js';
 import { AUDIENCE_ROUTES } from './routes-audience.js';
 
-export interface RouteDoc {
-  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
-  path: string;
-  tag: string;
-  summary: string;
-  /** public | user | organization:<permission|member> | workspace:<permission|member> */
-  access: string;
-  body?: z.ZodType;
-  query?: z.ZodType;
-  success: number;
-  idempotent?: boolean;
-}
+export type { RouteDoc } from './route-doc.js';
 
 const r = (d: RouteDoc) => d;
 

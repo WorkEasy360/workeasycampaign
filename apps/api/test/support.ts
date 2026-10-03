@@ -1,3 +1,5 @@
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { resetTestDatabase, testDatabaseUrls, withOwnerConnection } from '@workeasy/db/testing';
 import { createApp } from '../src/app.factory.js';
@@ -38,6 +40,8 @@ export async function startTestApp(env: Record<string, string> = {}): Promise<Te
     SESSION_SECRET: 'test-secret-test-secret-test-secret-0123456789',
     TRUST_PROXY: 'false',
     APP_URL: APP_ORIGIN,
+    // Outside the (possibly cloud-synced) repository: sync clients can block file I/O mid-test.
+    FILE_STORE_DIR: join(tmpdir(), 'workeasy-test-files'),
     ...env,
   });
   const mailer = new CapturingMailer();
