@@ -44,9 +44,21 @@ export function buildOpenApiDocument() {
       parameters: [...params, ...query, ...headers],
       ...(route.body
         ? { requestBody: { required: true, content: { 'application/json': { schema: z.toJSONSchema(route.body, { io: 'input' }) } } } }
-        : {}),
+        : route.requestContentType
+          ? { requestBody: { required: true, content: { [route.requestContentType]: { schema: { type: 'string', format: 'binary' } } } } }
+          : {}),
       responses: {
-        [route.success]: { description: 'Success' },
+        [route.success]: {
+          description: 'Success',
+          ...(route.response ? { content: { 'application/json': { schema: route.response } } } : {}),
+          ...(route.responseContentType ? { content: { [route.responseContentType]: { schema: { type: 'string' } } } } : {}),
+        },
+        ...Object.fromEntries(
+          Object.entries(route.errors ?? {}).map(([status, description]) => [
+            status,
+            { description, content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
+          ]),
+        ),
         default: { description: 'Error', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
       },
     };
@@ -55,7 +67,7 @@ export function buildOpenApiDocument() {
     openapi: '3.1.0',
     info: {
       title: 'Workeasy Campaign API',
-      version: '0.4.0',
+      version: '0.5.1',
       description:
         'Browser API. Cookie session + X-CSRF-Token on state-changing requests. Errors use one shape (Error). ' +
         'Organization/workspace routes answer 404 to non-members and 403 to members lacking the permission.',

@@ -11,4 +11,12 @@ export interface RouteDoc {
   query?: z.ZodType;
   success: number;
   idempotent?: boolean;
+  /** JSON Schema of the success body, for contracts other services depend on (e.g. eligibility). */
+  response?: Record<string, unknown>;
+  /** Route-specific error statuses worth knowing, beyond the generic 400/401/403/404 (status → meaning). */
+  errors?: Record<number, string>;
+  /** Raw request media type instead of a JSON body (e.g. CSV uploads). */
+  requestContentType?: 'text/csv';
+  /** Non-JSON success body (e.g. CSV downloads). */
+  responseContentType?: 'text/csv';
 }

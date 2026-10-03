@@ -1,4 +1,5 @@
 import {
+  ELIGIBILITY_REASONS,
   addIdentityRequest,
   bulkActionRequest,
   changeSubscriptionRequest,
@@ -29,6 +30,33 @@ import {
 import { z } from 'zod';
 import type { RouteDoc } from './route-doc.js';
 
+const VERSION_CONFLICT = { 409: 'version_conflict: the resource changed since it was read; reload and retry' };
+const reason = { type: 'object', required: ['code', 'message'], properties: { code: { type: 'string', enum: [...ELIGIBILITY_REASONS] }, message: { type: 'string' } } };
+/** Eligibility contract v1 (docs/eligibility.md). */
+const eligibilityResponse = {
+  type: 'object',
+  required: ['results', 'notFound'],
+  properties: {
+    results: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['contactId', 'channel', 'purpose', 'topicId', 'eligible', 'reasons', 'addressIdentityId'],
+        properties: {
+          contactId: { type: 'string', format: 'uuid' },
+          channel: { type: 'string', enum: ['email', 'sms', 'whatsapp'] },
+          purpose: { type: 'string', enum: ['marketing', 'transactional'] },
+          topicId: { type: ['string', 'null'], format: 'uuid' },
+          eligible: { type: 'boolean' },
+          reasons: { type: 'array', items: reason },
+          addressIdentityId: { type: ['string', 'null'], format: 'uuid' },
+        },
+      },
+    },
+    notFound: { type: 'array', items: { type: 'string', format: 'uuid' } },
+  },
+};
+
 const W = '/v1/workspaces/{workspaceId}';
 const r = (d: RouteDoc) => d;
 const ws = (p: string) => `workspace:${p}`;
@@ -37,10 +65,10 @@ const ws = (p: string) => `workspace:${p}`;
 export const AUDIENCE_ROUTES: RouteDoc[] = [
   r({ method: 'GET', path: `${W}/contacts`, tag: 'Contacts', summary: 'Search and filter contacts (keyset pagination)', access: ws('contacts.read'), query: contactListQuery, success: 200 }),
   r({ method: 'GET', path: `${W}/contacts/count`, tag: 'Contacts', summary: 'Count contacts matching filters', access: ws('contacts.read'), query: contactListQuery.omit({ limit: true, cursor: true, sort: true, order: true }), success: 200 }),
-  r({ method: 'POST', path: `${W}/contacts`, tag: 'Contacts', summary: 'Create a contact', access: ws('contacts.create'), body: createContactRequest, success: 201, idempotent: true }),
+  r({ method: 'POST', path: `${W}/contacts`, tag: 'Contacts', summary: 'Create a contact', access: ws('contacts.create'), body: createContactRequest, success: 201, idempotent: true, errors: { 403: 'listIds/tagIds need lists.manage/tags.manage', 409: 'an email or phone already belongs to another contact; or the Idempotency-Key is in use by a request still running' } }),
   r({ method: 'POST', path: `${W}/contacts/bulk`, tag: 'Contacts', summary: 'Bulk action on selected or filtered contacts (action-specific permission)', access: ws('contacts.read + action permission'), body: bulkActionRequest, success: 200, idempotent: true }),
   r({ method: 'GET', path: `${W}/contacts/{contactId}`, tag: 'Contacts', summary: 'Contact detail', access: ws('contacts.read'), success: 200 }),
-  r({ method: 'PATCH', path: `${W}/contacts/{contactId}`, tag: 'Contacts', summary: 'Update profile and custom fields (optimistic version)', access: ws('contacts.update'), body: updateContactRequest, success: 200 }),
+  r({ method: 'PATCH', path: `${W}/contacts/{contactId}`, tag: 'Contacts', summary: 'Update profile and custom fields (optimistic version)', access: ws('contacts.update'), body: updateContactRequest, success: 200, errors: VERSION_CONFLICT }),
   r({ method: 'DELETE', path: `${W}/contacts/{contactId}`, tag: 'Contacts', summary: 'Soft-delete (restorable)', access: ws('contacts.delete'), success: 204 }),
   r({ method: 'POST', path: `${W}/contacts/{contactId}/restore`, tag: 'Contacts', summary: 'Restore a deleted contact', access: ws('contacts.delete'), success: 200 }),
   r({ method: 'POST', path: `${W}/contacts/{contactId}/erase`, tag: 'Contacts', summary: 'Permanently erase personal data (GDPR); consent evidence kept per retention policy', access: ws('contacts.delete'), body: z.object({ confirm: z.literal('ERASE') }), success: 204 }),
@@ -50,7 +78,7 @@ export const AUDIENCE_ROUTES: RouteDoc[] = [
   r({ method: 'POST', path: `${W}/contacts/{contactId}/identities/{identityId}/primary`, tag: 'Contacts', summary: 'Make an identity primary', access: ws('contacts.update'), success: 200 }),
   r({ method: 'GET', path: `${W}/contacts/{contactId}/timeline`, tag: 'Contacts', summary: 'Contact timeline (domain events)', access: ws('contacts.read'), query: paginationQuery, success: 200 }),
   r({ method: 'GET', path: `${W}/contacts/{contactId}/consent`, tag: 'Consent', summary: 'Consent evidence history', access: ws('consent.read'), query: paginationQuery, success: 200 }),
-  r({ method: 'POST', path: `${W}/contacts/{contactId}/consent`, tag: 'Consent', summary: 'Record consent with evidence (immutable)', access: ws('consent.manage'), body: recordConsentRequest, success: 201 }),
+  r({ method: 'POST', path: `${W}/contacts/{contactId}/consent`, tag: 'Consent', summary: 'Record consent with evidence (immutable)', access: ws('consent.manage'), body: recordConsentRequest, success: 201, errors: { 422: 'SELF_UNSUBSCRIBED (only the contact can opt in again), INVALID_TRANSITION (e.g. confirming an expired request) or NO_ADDRESS' } }),
   r({ method: 'PUT', path: `${W}/contacts/{contactId}/topics/{topicId}`, tag: 'Consent', summary: 'Set a topic preference (recorded as evidence)', access: ws('consent.manage'), body: topicPreferenceRequest, success: 200 }),
   r({ method: 'PUT', path: `${W}/contacts/{contactId}/tags/{tagId}`, tag: 'Tags', summary: 'Tag a contact', access: ws('tags.manage'), success: 204 }),
   r({ method: 'DELETE', path: `${W}/contacts/{contactId}/tags/{tagId}`, tag: 'Tags', summary: 'Untag a contact', access: ws('tags.manage'), success: 204 }),
@@ -58,7 +86,7 @@ export const AUDIENCE_ROUTES: RouteDoc[] = [
   r({ method: 'GET', path: `${W}/lists`, tag: 'Lists', summary: 'Lists with member counts', access: ws('lists.read'), query: listQuery, success: 200 }),
   r({ method: 'POST', path: `${W}/lists`, tag: 'Lists', summary: 'Create a list', access: ws('lists.manage'), body: createListRequest, success: 201 }),
   r({ method: 'GET', path: `${W}/lists/{listId}`, tag: 'Lists', summary: 'List detail', access: ws('lists.read'), success: 200 }),
-  r({ method: 'PATCH', path: `${W}/lists/{listId}`, tag: 'Lists', summary: 'Rename or describe a list', access: ws('lists.manage'), body: updateListRequest, success: 200 }),
+  r({ method: 'PATCH', path: `${W}/lists/{listId}`, tag: 'Lists', summary: 'Rename or describe a list', access: ws('lists.manage'), body: updateListRequest, success: 200, errors: VERSION_CONFLICT }),
   r({ method: 'POST', path: `${W}/lists/{listId}/archive`, tag: 'Lists', summary: 'Archive (read-only)', access: ws('lists.manage'), success: 200 }),
   r({ method: 'POST', path: `${W}/lists/{listId}/restore`, tag: 'Lists', summary: 'Restore', access: ws('lists.manage'), success: 200 }),
   r({ method: 'DELETE', path: `${W}/lists/{listId}`, tag: 'Lists', summary: 'Delete list and its memberships (contacts kept)', access: ws('lists.manage'), success: 204 }),
@@ -67,12 +95,12 @@ export const AUDIENCE_ROUTES: RouteDoc[] = [
 
   r({ method: 'GET', path: `${W}/tags`, tag: 'Tags', summary: 'Tags with contact counts', access: ws('tags.read'), success: 200 }),
   r({ method: 'POST', path: `${W}/tags`, tag: 'Tags', summary: 'Create a tag', access: ws('tags.manage'), body: createTagRequest, success: 201 }),
-  r({ method: 'PATCH', path: `${W}/tags/{tagId}`, tag: 'Tags', summary: 'Update a tag', access: ws('tags.manage'), body: updateTagRequest, success: 200 }),
+  r({ method: 'PATCH', path: `${W}/tags/{tagId}`, tag: 'Tags', summary: 'Update a tag', access: ws('tags.manage'), body: updateTagRequest, success: 200, errors: VERSION_CONFLICT }),
   r({ method: 'DELETE', path: `${W}/tags/{tagId}`, tag: 'Tags', summary: 'Delete a tag (untags contacts)', access: ws('tags.manage'), success: 204 }),
 
   r({ method: 'GET', path: `${W}/topics`, tag: 'Topics', summary: 'Topics and categories with subscriber counts', access: ws('topics.read'), success: 200 }),
   r({ method: 'POST', path: `${W}/topics`, tag: 'Topics', summary: 'Create a topic or category', access: ws('topics.manage'), body: createTopicRequest, success: 201 }),
-  r({ method: 'PATCH', path: `${W}/topics/{topicId}`, tag: 'Topics', summary: 'Update a topic', access: ws('topics.manage'), body: updateTopicRequest, success: 200 }),
+  r({ method: 'PATCH', path: `${W}/topics/{topicId}`, tag: 'Topics', summary: 'Update a topic', access: ws('topics.manage'), body: updateTopicRequest, success: 200, errors: VERSION_CONFLICT }),
   r({ method: 'POST', path: `${W}/topics/{topicId}/archive`, tag: 'Topics', summary: 'Archive (topics are never deleted)', access: ws('topics.manage'), success: 200 }),
   r({ method: 'POST', path: `${W}/topics/{topicId}/restore`, tag: 'Topics', summary: 'Restore', access: ws('topics.manage'), success: 200 }),
   r({ method: 'POST', path: `${W}/topics/{topicId}/default`, tag: 'Topics', summary: 'Make the default topic', access: ws('topics.manage'), success: 200 }),
@@ -80,7 +108,7 @@ export const AUDIENCE_ROUTES: RouteDoc[] = [
   r({ method: 'GET', path: `${W}/custom-fields`, tag: 'Custom fields', summary: 'Field definitions', access: ws('contacts.read'), success: 200 }),
   r({ method: 'POST', path: `${W}/custom-fields`, tag: 'Custom fields', summary: 'Create a field', access: ws('custom_fields.manage'), body: createCustomFieldRequest, success: 201 }),
   r({ method: 'PUT', path: `${W}/custom-fields/order`, tag: 'Custom fields', summary: 'Reorder fields', access: ws('custom_fields.manage'), body: reorderCustomFieldsRequest, success: 200 }),
-  r({ method: 'PATCH', path: `${W}/custom-fields/{fieldId}`, tag: 'Custom fields', summary: 'Update (key/type locked once used)', access: ws('custom_fields.manage'), body: updateCustomFieldRequest, success: 200 }),
+  r({ method: 'PATCH', path: `${W}/custom-fields/{fieldId}`, tag: 'Custom fields', summary: 'Update (key/type locked once used)', access: ws('custom_fields.manage'), body: updateCustomFieldRequest, success: 200, errors: VERSION_CONFLICT }),
   r({ method: 'POST', path: `${W}/custom-fields/{fieldId}/archive`, tag: 'Custom fields', summary: 'Archive (values kept, read-only)', access: ws('custom_fields.manage'), success: 200 }),
   r({ method: 'POST', path: `${W}/custom-fields/{fieldId}/restore`, tag: 'Custom fields', summary: 'Restore', access: ws('custom_fields.manage'), success: 200 }),
   r({ method: 'DELETE', path: `${W}/custom-fields/{fieldId}`, tag: 'Custom fields', summary: 'Delete (only never-used fields)', access: ws('custom_fields.manage'), success: 204 }),
@@ -91,17 +119,17 @@ export const AUDIENCE_ROUTES: RouteDoc[] = [
   r({ method: 'GET', path: `${W}/consent/retention-policy`, tag: 'Consent', summary: 'Consent-evidence retention policy', access: ws('consent.read'), success: 200 }),
   r({ method: 'PUT', path: `${W}/consent/retention-policy`, tag: 'Consent', summary: 'Set retention policy (audited)', access: ws('consent.manage'), body: retentionPolicyRequest, success: 200 }),
   r({ method: 'POST', path: `${W}/consent/retention-purge`, tag: 'Consent', summary: 'Purge evidence past retention now (audited)', access: ws('consent.manage'), success: 200 }),
-  r({ method: 'POST', path: `${W}/eligibility/check`, tag: 'Eligibility', summary: 'Explain whether contacts can receive a message on a channel', access: ws('contacts.read'), body: eligibilityCheckRequest, success: 200 }),
+  r({ method: 'POST', path: `${W}/eligibility/check`, tag: 'Eligibility', summary: 'Explain whether contacts can receive a message on a channel', access: ws('contacts.read'), body: eligibilityCheckRequest, success: 200, response: eligibilityResponse, errors: { 400: 'invalid body, or topicId is not a topic of this workspace' } }),
 
   r({ method: 'GET', path: `${W}/imports`, tag: 'Imports', summary: 'Imports', access: ws('contacts.import'), query: paginationQuery, success: 200 }),
-  r({ method: 'POST', path: `${W}/imports`, tag: 'Imports', summary: 'Upload a CSV (Content-Type: text/csv, ?fileName=)', access: ws('contacts.import'), success: 201 }),
+  r({ method: 'POST', path: `${W}/imports`, tag: 'Imports', summary: 'Upload a CSV (raw body, Content-Type: text/csv; ?fileName= for display only)', access: ws('contacts.import'), query: z.object({ fileName: z.string().max(255).optional() }), requestContentType: 'text/csv', success: 201, errors: { 400: 'not CSV, invalid UTF-8, malformed, empty, header only, or more than 100 columns', 409: 'TOO_MANY_OPEN_IMPORTS (10 unfinished imports in this workspace)', 413: 'FILE_TOO_LARGE or TOO_MANY_ROWS' } }),
   r({ method: 'GET', path: `${W}/imports/{importId}`, tag: 'Imports', summary: 'Import status and counts', access: ws('contacts.import'), success: 200 }),
   r({ method: 'GET', path: `${W}/imports/{importId}/preview`, tag: 'Imports', summary: 'First rows + suggested mapping', access: ws('contacts.import'), success: 200 }),
-  r({ method: 'PUT', path: `${W}/imports/{importId}/mapping`, tag: 'Imports', summary: 'Confirm column mapping and options', access: ws('contacts.import'), body: importMappingRequest, success: 200 }),
+  r({ method: 'PUT', path: `${W}/imports/{importId}/mapping`, tag: 'Imports', summary: 'Confirm column mapping and options', access: ws('contacts.import'), body: importMappingRequest, success: 200, errors: { 403: 'an option needs lists.manage, tags.manage or consent.manage', ...VERSION_CONFLICT } }),
   r({ method: 'POST', path: `${W}/imports/{importId}/dry-run`, tag: 'Imports', summary: 'Predict the outcome without changing contacts', access: ws('contacts.import'), success: 200 }),
-  r({ method: 'POST', path: `${W}/imports/{importId}/start`, tag: 'Imports', summary: 'Start (after a dry run); runs in the background', access: ws('contacts.import'), success: 202, idempotent: true }),
-  r({ method: 'POST', path: `${W}/imports/{importId}/retry`, tag: 'Imports', summary: 'Resume a failed or stalled import from its checkpoint', access: ws('contacts.import'), success: 202 }),
+  r({ method: 'POST', path: `${W}/imports/{importId}/start`, tag: 'Imports', summary: 'Start (after a dry run); runs in the background', access: ws('contacts.import'), success: 202, idempotent: true, errors: { 403: 'an option needs a permission the caller lacks', 409: 'IMPORT_IN_PROGRESS (another import is running in this workspace)', 422: 'no dry run yet (precondition_failed)' } }),
+  r({ method: 'POST', path: `${W}/imports/{importId}/retry`, tag: 'Imports', summary: 'Resume a failed or stalled import from its checkpoint', access: ws('contacts.import'), success: 202, errors: { 409: 'IMPORT_IN_PROGRESS', 422: 'not failed or stalled (precondition_failed)' } }),
   r({ method: 'POST', path: `${W}/imports/{importId}/cancel`, tag: 'Imports', summary: 'Cancel (committed rows stay)', access: ws('contacts.import'), success: 200 }),
   r({ method: 'GET', path: `${W}/imports/{importId}/issues`, tag: 'Imports', summary: 'Row issues (dry run or run)', access: ws('contacts.import'), query: paginationQuery.extend({ phase: z.enum(['dry_run', 'run']) }), success: 200 }),
-  r({ method: 'GET', path: `${W}/imports/{importId}/issues.csv`, tag: 'Imports', summary: 'Row issues as CSV (formula-safe)', access: ws('contacts.import'), success: 200 }),
+  r({ method: 'GET', path: `${W}/imports/{importId}/issues.csv`, tag: 'Imports', summary: 'Row issues as CSV (formula-safe)', access: ws('contacts.import'), query: z.object({ phase: z.enum(['dry_run', 'run']).optional() }), success: 200, responseContentType: 'text/csv' }),
 ];

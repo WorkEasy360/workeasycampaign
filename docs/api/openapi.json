@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Workeasy Campaign API",
-    "version": "0.4.0",
+    "version": "0.5.1",
     "description": "Browser API. Cookie session + X-CSRF-Token on state-changing requests. Errors use one shape (Error). Organization/workspace routes answer 404 to non-members and 403 to members lacking the permission."
   },
   "servers": [
@@ -3269,6 +3269,26 @@
           "201": {
             "description": "Success"
           },
+          "403": {
+            "description": "listIds/tagIds need lists.manage/tags.manage",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "an email or phone already belongs to another contact; or the Idempotency-Key is in use by a request still running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "default": {
             "description": "Error",
             "content": {
@@ -3815,6 +3835,16 @@
         "responses": {
           "200": {
             "description": "Success"
+          },
+          "409": {
+            "description": "version_conflict: the resource changed since it was read; reload and retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           },
           "default": {
             "description": "Error",
@@ -4597,6 +4627,16 @@
           "201": {
             "description": "Success"
           },
+          "422": {
+            "description": "SELF_UNSUBSCRIBED (only the contact can opt in again), INVALID_TRANSITION (e.g. confirming an expired request) or NO_ADDRESS",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "default": {
             "description": "Error",
             "content": {
@@ -5108,6 +5148,16 @@
         "responses": {
           "200": {
             "description": "Success"
+          },
+          "409": {
+            "description": "version_conflict: the resource changed since it was read; reload and retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           },
           "default": {
             "description": "Error",
@@ -5672,6 +5722,16 @@
           "200": {
             "description": "Success"
           },
+          "409": {
+            "description": "version_conflict: the resource changed since it was read; reload and retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "default": {
             "description": "Error",
             "content": {
@@ -5961,6 +6021,16 @@
         "responses": {
           "200": {
             "description": "Success"
+          },
+          "409": {
+            "description": "version_conflict: the resource changed since it was read; reload and retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           },
           "default": {
             "description": "Error",
@@ -6542,6 +6612,16 @@
         "responses": {
           "200": {
             "description": "Success"
+          },
+          "409": {
+            "description": "version_conflict: the resource changed since it was read; reload and retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           },
           "default": {
             "description": "Error",
@@ -7261,7 +7341,128 @@
         },
         "responses": {
           "200": {
-            "description": "Success"
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "results",
+                    "notFound"
+                  ],
+                  "properties": {
+                    "results": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "contactId",
+                          "channel",
+                          "purpose",
+                          "topicId",
+                          "eligible",
+                          "reasons",
+                          "addressIdentityId"
+                        ],
+                        "properties": {
+                          "contactId": {
+                            "type": "string",
+                            "format": "uuid"
+                          },
+                          "channel": {
+                            "type": "string",
+                            "enum": [
+                              "email",
+                              "sms",
+                              "whatsapp"
+                            ]
+                          },
+                          "purpose": {
+                            "type": "string",
+                            "enum": [
+                              "marketing",
+                              "transactional"
+                            ]
+                          },
+                          "topicId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "format": "uuid"
+                          },
+                          "eligible": {
+                            "type": "boolean"
+                          },
+                          "reasons": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "required": [
+                                "code",
+                                "message"
+                              ],
+                              "properties": {
+                                "code": {
+                                  "type": "string",
+                                  "enum": [
+                                    "CONTACT_DELETED",
+                                    "NOT_MARKETING",
+                                    "UNSUBSCRIBED",
+                                    "NO_ADDRESS",
+                                    "SUPPRESSED",
+                                    "CONSENT_MISSING",
+                                    "CONSENT_PENDING",
+                                    "CONSENT_EXPIRED",
+                                    "CONSENT_WITHDRAWN",
+                                    "CONSENT_ADDRESS_CHANGED",
+                                    "TOPIC_NOT_SUBSCRIBED",
+                                    "TOPIC_INACTIVE",
+                                    "FREQUENCY_CAP",
+                                    "QUIET_HOURS",
+                                    "DUPLICATE",
+                                    "UNENGAGED",
+                                    "CHANNEL_UNAVAILABLE",
+                                    "EXCLUDED_BY_CAMPAIGN"
+                                  ]
+                                },
+                                "message": {
+                                  "type": "string"
+                                }
+                              }
+                            }
+                          },
+                          "addressIdentityId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "format": "uuid"
+                          }
+                        }
+                      }
+                    },
+                    "notFound": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "format": "uuid"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid body, or topicId is not a topic of this workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           },
           "default": {
             "description": "Error",
@@ -7339,7 +7540,7 @@
         "tags": [
           "Imports"
         ],
-        "summary": "Upload a CSV (Content-Type: text/csv, ?fileName=)",
+        "summary": "Upload a CSV (raw body, Content-Type: text/csv; ?fileName= for display only)",
         "description": "Access: `workspace:contacts.import`",
         "security": [
           {
@@ -7357,6 +7558,15 @@
             }
           },
           {
+            "name": "fileName",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          },
+          {
             "name": "X-CSRF-Token",
             "in": "header",
             "required": true,
@@ -7365,9 +7575,50 @@
             }
           }
         ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "text/csv": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
         "responses": {
           "201": {
             "description": "Success"
+          },
+          "400": {
+            "description": "not CSV, invalid UTF-8, malformed, empty, header only, or more than 100 columns",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "TOO_MANY_OPEN_IMPORTS (10 unfinished imports in this workspace)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "FILE_TOO_LARGE or TOO_MANY_ROWS",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           },
           "default": {
             "description": "Error",
@@ -7672,6 +7923,26 @@
           "200": {
             "description": "Success"
           },
+          "403": {
+            "description": "an option needs lists.manage, tags.manage or consent.manage",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "version_conflict: the resource changed since it was read; reload and retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "default": {
             "description": "Error",
             "content": {
@@ -7796,6 +8067,36 @@
           "202": {
             "description": "Success"
           },
+          "403": {
+            "description": "an option needs a permission the caller lacks",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "IMPORT_IN_PROGRESS (another import is running in this workspace)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "no dry run yet (precondition_failed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "default": {
             "description": "Error",
             "content": {
@@ -7852,6 +8153,26 @@
         "responses": {
           "202": {
             "description": "Success"
+          },
+          "409": {
+            "description": "IMPORT_IN_PROGRESS",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "not failed or stalled (precondition_failed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           },
           "default": {
             "description": "Error",
@@ -8034,11 +8355,30 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          {
+            "name": "phase",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "dry_run",
+                "run"
+              ]
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": "Success"
+            "description": "Success",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "default": {
             "description": "Error",
