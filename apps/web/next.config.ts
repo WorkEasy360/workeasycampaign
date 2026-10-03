@@ -29,6 +29,13 @@ const securityHeaders = [
 const config: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  experimental: {
+    // Next buffers proxied request bodies (for proxy.ts) and silently TRUNCATES them at this size (default 10 MB).
+    // A truncated CSV upload made the API wait for missing bytes until the proxy timed out (hardening H-3).
+    // Invariant: keep this ABOVE the API's IMPORT_MAX_BYTES (default 20 MB). Then any body cut at this limit is still
+    // larger than the API allows and is rejected with 413 — never imported partially.
+    proxyClientMaxBodySize: '32mb',
+  },
   transpilePackages: ['@workeasy/shared'],
   async headers() {
     return [{ source: '/:path*', headers: securityHeaders }];

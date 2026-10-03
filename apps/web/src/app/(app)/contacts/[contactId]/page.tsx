@@ -315,7 +315,8 @@ function ConsentCard({ contact: c }: { contact: ContactDetail }) {
     onError: (err) => setError(errorMessage(err)),
   });
   if (!can('consent.read')) return null;
-  const tone = { granted: 'success', pending: 'warning', withdrawn: 'danger', none: 'neutral' } as const;
+  const tone = { granted: 'success', pending: 'warning', expired: 'warning', withdrawn: 'danger', none: 'neutral' } as const;
+  const label = { granted: 'Granted', pending: 'Pending', expired: 'Request expired', withdrawn: 'Withdrawn', none: 'No consent' } as const;
 
   return (
     <Card title="Consent" description="Evidence is append-only: every change is kept with who, when and how.">
@@ -324,10 +325,13 @@ function ConsentCard({ contact: c }: { contact: ContactDetail }) {
           <div key={s.channel} className="rounded-control border border-line p-3">
             <p className="text-sm font-medium">{CHANNEL_LABEL[s.channel]}</p>
             <div className="mt-1 flex items-center gap-2">
-              <Badge tone={tone[s.state]}>{s.state === 'none' ? 'No consent' : s.state}</Badge>
+              <Badge tone={tone[s.state]}>{label[s.state]}</Badge>
               {s.changedBy === 'contact' && <span className="text-xs text-ink-muted">by contact</span>}
             </div>
             {s.changedAt && <p className="mt-1 text-xs text-ink-faint">{relativeTime(s.changedAt)}</p>}
+            {s.state === 'granted' && s.appliesToPrimaryAddress === false && (
+              <p className="mt-1 text-xs text-warning">Given for a previous address — does not cover the current one.</p>
+            )}
             {can('consent.manage') && !c.deletedAt && (
               <Button
                 size="sm"

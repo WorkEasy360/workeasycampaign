@@ -25,9 +25,9 @@ const detail = {
   tags: [],
   topics: [],
   consent: [
-    { channel: 'email', state: 'none', changedBy: null, lawfulBasis: null, changedAt: null },
-    { channel: 'sms', state: 'none', changedBy: null, lawfulBasis: null, changedAt: null },
-    { channel: 'whatsapp', state: 'none', changedBy: null, lawfulBasis: null, changedAt: null },
+    { channel: 'email', state: 'none', changedBy: null, lawfulBasis: null, changedAt: null, appliesToPrimaryAddress: null },
+    { channel: 'sms', state: 'none', changedBy: null, lawfulBasis: null, changedAt: null, appliesToPrimaryAddress: null },
+    { channel: 'whatsapp', state: 'none', changedBy: null, lawfulBasis: null, changedAt: null, appliesToPrimaryAddress: null },
   ],
   suppressions: [],
   version: 3,
@@ -113,6 +113,25 @@ describe('contact detail', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(await screen.findByText(/someone else changed this contact/i)).toBeInTheDocument();
     expect(calls.find((c) => c.method === 'PATCH')!.body).toMatchObject({ firstName: 'Asha R', version: 3 });
+  });
+
+  it('explains expired requests and consent given for a previous address', async () => {
+    mockApi({
+      'GET /contacts/c1': () =>
+        json(200, {
+          ...detail,
+          consent: [
+            { channel: 'email', state: 'granted', changedBy: 'user', lawfulBasis: 'consent', changedAt: '2026-09-01T10:00:00.000Z', appliesToPrimaryAddress: false },
+            { channel: 'sms', state: 'expired', changedBy: 'user', lawfulBasis: null, changedAt: '2026-09-01T10:00:00.000Z', appliesToPrimaryAddress: true },
+            detail.consent[2],
+          ],
+        }),
+      'POST /eligibility/check': () => json(200, { results: [{ contactId: 'c1', eligible: false, reasons: [{ code: 'CONSENT_ADDRESS_CHANGED', message: 'Consent was given for a different address than the current one' }], addressIdentityId: 'i1' }] }),
+    });
+    renderAudience(<ContactDetailPage />, EDITOR);
+    expect(await screen.findByText(/Given for a previous address/)).toBeInTheDocument();
+    expect(screen.getByText('Request expired')).toBeInTheDocument();
+    expect(await screen.findByText('CONSENT_ADDRESS_CHANGED')).toBeInTheDocument();
   });
 
   it('shows a not-found message for a contact outside this workspace', async () => {

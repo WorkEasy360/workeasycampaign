@@ -61,7 +61,7 @@ function ImportsInner() {
         >
           <Upload className="size-8 text-ink-faint" aria-hidden />
           <p className="text-sm text-ink-muted">Drop a CSV file here, or</p>
-          <input ref={input} id="csv-file" type="file" accept=".csv,text/csv" className="sr-only" onChange={(e) => e.target.files?.[0] && void upload(e.target.files[0])} />
+          <input ref={input} id="csv-file" type="file" tabIndex={-1} aria-label="CSV file to import" accept=".csv,text/csv" className="sr-only" onChange={(e) => e.target.files?.[0] && void upload(e.target.files[0])} />
           <Button loading={uploading} onClick={() => input.current?.click()}>
             Choose file
           </Button>

@@ -43,12 +43,13 @@
   --line: oklch(0.91 0.006 270);
   --ink: oklch(0.21 0.01 270);
   --ink-muted: oklch(0.45 0.015 270);
-  --ink-faint: oklch(0.6 0.01 270);
+  /* WCAG AA (4.5:1) on surface, surface-muted and canvas — verified by axe in apps/e2e/tests/phase5-a11y.spec.ts. */
+  --ink-faint: oklch(0.53 0.012 270);
   --danger: oklch(0.53 0.2 25);
   --danger-soft: oklch(0.96 0.03 25);
   --success: oklch(0.52 0.13 155);
   --success-soft: oklch(0.96 0.04 155);
-  --warning: oklch(0.6 0.14 70);
+  --warning: oklch(0.5 0.12 70);
   --warning-soft: oklch(0.97 0.05 85);
   --accent: oklch(0.5 0.21 270);
   --accent-soft: oklch(0.95 0.03 270);
@@ -64,7 +65,7 @@
     --line: oklch(0.3 0.012 270);
     --ink: oklch(0.95 0.005 270);
     --ink-muted: oklch(0.75 0.01 270);
-    --ink-faint: oklch(0.6 0.01 270);
+    --ink-faint: oklch(0.66 0.01 270);
     --danger: oklch(0.7 0.17 25);
     --danger-soft: oklch(0.28 0.06 25);
     --success: oklch(0.74 0.14 155);
