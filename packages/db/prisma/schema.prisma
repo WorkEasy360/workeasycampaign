@@ -10,14 +10,17 @@
 // sections ("Part B") of each migration and are verified by packages/db/test/security-invariants.test.ts.
 
 generator client {
-  provider     = "prisma-client"
-  output       = "../src/generated/prisma"
-  moduleFormat = "esm"
+  provider        = "prisma-client"
+  output          = "../src/generated/prisma"
+  moduleFormat    = "esm"
+  // Trigram search index on contacts.search_text (docs/audience.md §8).
+  previewFeatures = ["postgresqlExtensions"]
 }
 
 datasource db {
-  provider = "postgresql"
-  schemas  = ["public", "identity"]
+  provider   = "postgresql"
+  schemas    = ["public", "identity"]
+  extensions = [pg_trgm(schema: "public")]
 }
 
 // ───────────────────────────── identity schema: local identity provider only ─────────────────────────────
@@ -215,6 +218,16 @@ model Workspace {
   memberships  WorkspaceMembership[]
   settings     WorkspaceSettings?
 
+  // Audience (Phase 5) — all workspace-owned
+  contacts               Contact[]
+  customFields           CustomFieldDefinition[]
+  lists                  ContactList[]
+  tags                   Tag[]
+  topics                 Topic[]
+  suppressions           Suppression[]
+  imports                ContactImport[]
+  consentRetentionPolicy ConsentRetentionPolicy?
+
   @@unique([orgId, id])
   @@unique([orgId, slug])
   @@map("workspaces")
@@ -223,13 +236,13 @@ model Workspace {
 
 /// Workspace-owned configuration (first workspace-scoped table; proves workspace-level RLS).
 model WorkspaceSettings {
-  orgId          String   @map("org_id") @db.Uuid
-  workspaceId    String   @id @map("workspace_id") @db.Uuid
-  defaultSenderName String? @map("default_sender_name")
-  defaultReplyTo String?  @map("default_reply_to")
-  locale         String   @default("en")
-  updatedAt      DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
-  version        Int      @default(1)
+  orgId             String   @map("org_id") @db.Uuid
+  workspaceId       String   @id @map("workspace_id") @db.Uuid
+  defaultSenderName String?  @map("default_sender_name")
+  defaultReplyTo    String?  @map("default_reply_to")
+  locale            String   @default("en")
+  updatedAt         DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+  version           Int      @default(1)
 
   workspace Workspace @relation(fields: [orgId, workspaceId], references: [orgId, id], onDelete: Cascade)
 
@@ -299,10 +312,10 @@ model WorkspaceMembership {
   updatedAt   DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
   version     Int      @default(1)
 
-  workspace        Workspace              @relation(fields: [orgId, workspaceId], references: [orgId, id], onDelete: Restrict)
-  orgMembership    OrganizationMembership @relation(fields: [orgId, userId], references: [orgId, userId], onDelete: Restrict)
-  user             User                   @relation(fields: [userId], references: [id], onDelete: Restrict)
-  role             Role                   @relation(fields: [orgId, roleId], references: [orgId, id], onDelete: Restrict)
+  workspace     Workspace              @relation(fields: [orgId, workspaceId], references: [orgId, id], onDelete: Restrict)
+  orgMembership OrganizationMembership @relation(fields: [orgId, userId], references: [orgId, userId], onDelete: Restrict)
+  user          User                   @relation(fields: [userId], references: [id], onDelete: Restrict)
+  role          Role                   @relation(fields: [orgId, roleId], references: [orgId, id], onDelete: Restrict)
 
   @@unique([workspaceId, userId])
   @@index([orgId, userId])
@@ -311,22 +324,22 @@ model WorkspaceMembership {
 }
 
 model Invitation {
-  id                  String    @id @default(uuid(7)) @db.Uuid
-  orgId               String    @map("org_id") @db.Uuid
-  email               String
-  emailNormalized     String    @map("email_normalized")
-  organizationRoleId  String    @map("organization_role_id") @db.Uuid
+  id                 String    @id @default(uuid(7)) @db.Uuid
+  orgId              String    @map("org_id") @db.Uuid
+  email              String
+  emailNormalized    String    @map("email_normalized")
+  organizationRoleId String    @map("organization_role_id") @db.Uuid
   /// [{ workspaceId, roleId }] applied on acceptance (validated again at acceptance time).
-  workspaceGrants     Json      @default("[]") @map("workspace_grants")
-  tokenHash           String    @unique @map("token_hash")
-  status              String    @default("pending") // pending | accepted | revoked | expired
-  invitedByUserId     String?   @map("invited_by_user_id") @db.Uuid
-  expiresAt           DateTime  @map("expires_at") @db.Timestamptz(3)
-  acceptedAt          DateTime? @map("accepted_at") @db.Timestamptz(3)
-  acceptedByUserId    String?   @map("accepted_by_user_id") @db.Uuid
-  revokedAt           DateTime? @map("revoked_at") @db.Timestamptz(3)
-  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
-  version             Int       @default(1)
+  workspaceGrants    Json      @default("[]") @map("workspace_grants")
+  tokenHash          String    @unique @map("token_hash")
+  status             String    @default("pending") // pending | accepted | revoked | expired
+  invitedByUserId    String?   @map("invited_by_user_id") @db.Uuid
+  expiresAt          DateTime  @map("expires_at") @db.Timestamptz(3)
+  acceptedAt         DateTime? @map("accepted_at") @db.Timestamptz(3)
+  acceptedByUserId   String?   @map("accepted_by_user_id") @db.Uuid
+  revokedAt          DateTime? @map("revoked_at") @db.Timestamptz(3)
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  version            Int       @default(1)
 
   organization     Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
   organizationRole Role         @relation(fields: [orgId, organizationRoleId], references: [orgId, id], onDelete: Restrict)
@@ -404,5 +417,409 @@ model ProviderMessageRoute {
   @@id([provider, providerMessageId])
   @@index([orgId, workspaceId])
   @@map("provider_message_routes")
+  @@schema("public")
+}
+
+// ───────────────────────────── audience (Phase 5) — all workspace-owned ─────────────────────────────
+// docs/audience.md. Every child references its parent through (org_id, workspace_id, id), so a row can never point
+// at another workspace's data. RLS: org_id = current org AND workspace_id = current workspace.
+
+model Contact {
+  id                    String    @id @default(uuid(7)) @db.Uuid
+  orgId                 String    @map("org_id") @db.Uuid
+  workspaceId           String    @map("workspace_id") @db.Uuid
+  firstName             String?   @map("first_name")
+  lastName              String?   @map("last_name")
+  company               String?
+  timezone              String?
+  locale                String?
+  /// Administrative status [ZOHO_PARITY]: marketing | non_marketing | unsubscribed
+  subscriptionType      String    @default("marketing") @map("subscription_type")
+  subscriptionChangedAt DateTime  @default(now()) @map("subscription_changed_at") @db.Timestamptz(3)
+  /// Who unsubscribed: contact | user | system. A self-unsubscribe can only be undone by the contact.
+  unsubscribedBy        String?   @map("unsubscribed_by")
+  source                String    @default("manual") // manual | import | api | form
+  sourceRef             String?   @map("source_ref")
+  /// Values keyed by immutable custom-field keys.
+  customFields          Json      @default("{}") @map("custom_fields")
+  /// Lower-case name + identity values, maintained by the service; trigram-indexed for search.
+  searchText            String    @default("") @map("search_text")
+  createdByUserId       String?   @map("created_by_user_id") @db.Uuid
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt             DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+  deletedAt             DateTime? @map("deleted_at") @db.Timestamptz(3)
+  /// GDPR erasure: personal data removed, row kept as a tombstone for consent evidence.
+  erasedAt              DateTime? @map("erased_at") @db.Timestamptz(3)
+  version               Int       @default(1)
+
+  workspace        Workspace                @relation(fields: [orgId, workspaceId], references: [orgId, id], onDelete: Restrict)
+  identities       ContactIdentity[]
+  listMemberships  ListMembership[]
+  tags             ContactTag[]
+  topicPreferences ContactTopicPreference[]
+  consentEvents    ConsentEvent[]
+  consentStates    ConsentState[]
+  suppressions     Suppression[]
+
+  @@unique([orgId, workspaceId, id])
+  @@index([workspaceId, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([workspaceId, updatedAt(sort: Desc), id(sort: Desc)])
+  @@index([workspaceId, subscriptionType])
+  @@index([searchText(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@map("contacts")
+  @@schema("public")
+}
+
+model ContactIdentity {
+  id              String    @id @default(uuid(7)) @db.Uuid
+  orgId           String    @map("org_id") @db.Uuid
+  workspaceId     String    @map("workspace_id") @db.Uuid
+  contactId       String    @map("contact_id") @db.Uuid
+  kind            String // email | phone | whatsapp | external
+  /// External system for kind=external (e.g. "crm:hubspot"); empty for other kinds.
+  provider        String    @default("")
+  value           String
+  valueNormalized String    @map("value_normalized")
+  isPrimary       Boolean   @default(false) @map("is_primary")
+  verifiedAt      DateTime? @map("verified_at") @db.Timestamptz(3)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  contact Contact @relation(fields: [orgId, workspaceId, contactId], references: [orgId, workspaceId, id], onDelete: Restrict)
+
+  @@unique([workspaceId, kind, provider, valueNormalized])
+  @@index([workspaceId, contactId])
+  @@map("contact_identities")
+  @@schema("public")
+}
+
+model CustomFieldDefinition {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  orgId       String   @map("org_id") @db.Uuid
+  workspaceId String   @map("workspace_id") @db.Uuid
+  /// Machine key used by the API and imports. Immutable once key_locked.
+  key         String
+  label       String
+  description String   @default("")
+  type        String
+  required    Boolean  @default(false)
+  /// [{ key, label, archived }] for select types.
+  options     Json     @default("[]")
+  /// { maxLength?, min?, max? }
+  validation  Json     @default("{}")
+  position    Int      @default(0)
+  status      String   @default("active") // active | archived
+  /// Set when the first contact stores a value; from then on key and type are immutable.
+  keyLocked   Boolean  @default(false) @map("key_locked")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+  version     Int      @default(1)
+
+  workspace Workspace @relation(fields: [orgId, workspaceId], references: [orgId, id], onDelete: Restrict)
+
+  @@unique([workspaceId, key])
+  @@index([workspaceId, status, position])
+  @@map("custom_field_definitions")
+  @@schema("public")
+}
+
+model ContactList {
+  id              String    @id @default(uuid(7)) @db.Uuid
+  orgId           String    @map("org_id") @db.Uuid
+  workspaceId     String    @map("workspace_id") @db.Uuid
+  name            String
+  /// Lower-cased name while not deleted, NULL once deleted: case-insensitive uniqueness of live lists.
+  nameKey         String?   @map("name_key")
+  description     String    @default("")
+  status          String    @default("active") // active | archived
+  createdByUserId String?   @map("created_by_user_id") @db.Uuid
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+  deletedAt       DateTime? @map("deleted_at") @db.Timestamptz(3)
+  version         Int       @default(1)
+
+  workspace Workspace        @relation(fields: [orgId, workspaceId], references: [orgId, id], onDelete: Restrict)
+  members   ListMembership[]
+
+  @@unique([orgId, workspaceId, id])
+  @@unique([workspaceId, nameKey])
+  @@map("lists")
+  @@schema("public")
+}
+
+model ListMembership {
+  orgId         String   @map("org_id") @db.Uuid
+  workspaceId   String   @map("workspace_id") @db.Uuid
+  listId        String   @map("list_id") @db.Uuid
+  contactId     String   @map("contact_id") @db.Uuid
+  source        String   @default("manual") // manual | import | api | bulk
+  addedByUserId String?  @map("added_by_user_id") @db.Uuid
+  addedAt       DateTime @default(now()) @map("added_at") @db.Timestamptz(3)
+
+  list    ContactList @relation(fields: [orgId, workspaceId, listId], references: [orgId, workspaceId, id], onDelete: Restrict)
+  contact Contact     @relation(fields: [orgId, workspaceId, contactId], references: [orgId, workspaceId, id], onDelete: Restrict)
+
+  @@id([listId, contactId])
+  @@index([workspaceId, contactId])
+  @@map("list_memberships")
+  @@schema("public")
+}
+
+model Tag {
+  id          String    @id @default(uuid(7)) @db.Uuid
+  orgId       String    @map("org_id") @db.Uuid
+  workspaceId String    @map("workspace_id") @db.Uuid
+  name        String
+  nameKey     String?   @map("name_key")
+  description String    @default("")
+  color       String    @default("slate")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(3)
+  version     Int       @default(1)
+
+  workspace Workspace    @relation(fields: [orgId, workspaceId], references: [orgId, id], onDelete: Restrict)
+  contacts  ContactTag[]
+
+  @@unique([orgId, workspaceId, id])
+  @@unique([workspaceId, nameKey])
+  @@map("tags")
+  @@schema("public")
+}
+
+model ContactTag {
+  orgId          String   @map("org_id") @db.Uuid
+  workspaceId    String   @map("workspace_id") @db.Uuid
+  tagId          String   @map("tag_id") @db.Uuid
+  contactId      String   @map("contact_id") @db.Uuid
+  taggedByUserId String?  @map("tagged_by_user_id") @db.Uuid
+  taggedAt       DateTime @default(now()) @map("tagged_at") @db.Timestamptz(3)
+
+  tag     Tag     @relation(fields: [orgId, workspaceId, tagId], references: [orgId, workspaceId, id], onDelete: Restrict)
+  contact Contact @relation(fields: [orgId, workspaceId, contactId], references: [orgId, workspaceId, id], onDelete: Restrict)
+
+  @@id([tagId, contactId])
+  @@index([workspaceId, contactId])
+  @@map("contact_tags")
+  @@schema("public")
+}
+
+model Topic {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  orgId       String   @map("org_id") @db.Uuid
+  workspaceId String   @map("workspace_id") @db.Uuid
+  /// Optional category (a topic with kind = category).
+  parentId    String?  @map("parent_id") @db.Uuid
+  kind        String   @default("topic") // topic | category
+  key         String
+  name        String
+  description String   @default("")
+  status      String   @default("active") // active | archived
+  isDefault   Boolean  @default(false) @map("is_default")
+  position    Int      @default(0)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+  version     Int      @default(1)
+
+  workspace   Workspace                @relation(fields: [orgId, workspaceId], references: [orgId, id], onDelete: Restrict)
+  parent      Topic?                   @relation("TopicHierarchy", fields: [orgId, workspaceId, parentId], references: [orgId, workspaceId, id], onDelete: Restrict)
+  children    Topic[]                  @relation("TopicHierarchy")
+  preferences ContactTopicPreference[]
+
+  @@unique([orgId, workspaceId, id])
+  @@unique([workspaceId, key])
+  @@map("topics")
+  @@schema("public")
+}
+
+/// Projection of topic-scoped consent events: current preference per (contact, topic).
+model ContactTopicPreference {
+  orgId       String   @map("org_id") @db.Uuid
+  workspaceId String   @map("workspace_id") @db.Uuid
+  contactId   String   @map("contact_id") @db.Uuid
+  topicId     String   @map("topic_id") @db.Uuid
+  status      String // subscribed | unsubscribed
+  changedBy   String   @map("changed_by") // contact | user | system
+  lastEventId String   @map("last_event_id") @db.Uuid
+  changedAt   DateTime @map("changed_at") @db.Timestamptz(3)
+
+  contact Contact @relation(fields: [orgId, workspaceId, contactId], references: [orgId, workspaceId, id], onDelete: Restrict)
+  topic   Topic   @relation(fields: [orgId, workspaceId, topicId], references: [orgId, workspaceId, id], onDelete: Restrict)
+
+  @@id([contactId, topicId])
+  @@index([workspaceId, topicId, status])
+  @@map("contact_topic_preferences")
+  @@schema("public")
+}
+
+/// Immutable consent evidence (docs/consent.md). Never updated; deleted only by the retention purge.
+model ConsentEvent {
+  id                 String   @id @default(uuid(7)) @db.Uuid
+  orgId              String   @map("org_id") @db.Uuid
+  workspaceId        String   @map("workspace_id") @db.Uuid
+  contactId          String   @map("contact_id") @db.Uuid
+  /// Channel scope (email | sms | whatsapp). NULL for topic-preference events (a topic applies to every channel).
+  channel            String?
+  topicId            String?  @map("topic_id") @db.Uuid
+  /// subscribed | unsubscribed | pending | confirmed | revoked
+  action             String
+  previousState      String   @map("previous_state")
+  newState           String   @map("new_state")
+  lawfulBasis        String?  @map("lawful_basis")
+  source             String
+  actorType          String   @map("actor_type") // contact | user | system | api_key
+  actorId            String?  @map("actor_id")
+  /// Keyed hash of the channel address at the time; survives erasure without storing personal data.
+  subjectFingerprint String?  @map("subject_fingerprint")
+  ipAddress          String?  @map("ip_address")
+  userAgent          String?  @map("user_agent")
+  consentTextVersion String?  @map("consent_text_version")
+  formId             String?  @map("form_id")
+  formVersion        String?  @map("form_version")
+  /// Reference metadata: import id + row, API request id, note, confirmation id.
+  evidence           Json     @default("{}")
+  correlationId      String   @map("correlation_id") @db.Uuid
+  occurredAt         DateTime @map("occurred_at") @db.Timestamptz(3)
+  recordedAt         DateTime @default(now()) @map("recorded_at") @db.Timestamptz(3)
+
+  contact Contact @relation(fields: [orgId, workspaceId, contactId], references: [orgId, workspaceId, id], onDelete: Restrict)
+
+  @@index([workspaceId, contactId, occurredAt(sort: Desc)])
+  @@index([workspaceId, recordedAt])
+  @@map("consent_events")
+  @@schema("public")
+}
+
+/// Projection of channel-scoped consent events: current consent per (contact, channel).
+model ConsentState {
+  orgId       String   @map("org_id") @db.Uuid
+  workspaceId String   @map("workspace_id") @db.Uuid
+  contactId   String   @map("contact_id") @db.Uuid
+  channel     String
+  state       String // pending | granted | withdrawn
+  changedBy   String   @map("changed_by") // contact | user | system
+  lawfulBasis String?  @map("lawful_basis")
+  lastEventId String   @map("last_event_id") @db.Uuid
+  changedAt   DateTime @map("changed_at") @db.Timestamptz(3)
+
+  contact Contact @relation(fields: [orgId, workspaceId, contactId], references: [orgId, workspaceId, id], onDelete: Restrict)
+
+  @@id([contactId, channel])
+  @@index([workspaceId, channel, state])
+  @@map("consent_states")
+  @@schema("public")
+}
+
+/// Per-workspace consent-evidence retention (D3). No row = documented defaults (docs/consent.md).
+model ConsentRetentionPolicy {
+  orgId                     String   @map("org_id") @db.Uuid
+  workspaceId               String   @id @map("workspace_id") @db.Uuid
+  /// Days to keep evidence after consent is withdrawn; NULL = keep indefinitely (an explicit choice).
+  retainAfterWithdrawalDays Int?     @map("retain_after_withdrawal_days")
+  /// Days to keep pseudonymized evidence after a contact is erased; NULL = indefinitely.
+  retainAfterErasureDays    Int?     @map("retain_after_erasure_days")
+  /// Days after which unconfirmed (pending) consent expires.
+  pendingExpiryDays         Int      @default(7) @map("pending_expiry_days")
+  updatedByUserId           String?  @map("updated_by_user_id") @db.Uuid
+  updatedAt                 DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+  version                   Int      @default(1)
+
+  workspace Workspace @relation(fields: [orgId, workspaceId], references: [orgId, id], onDelete: Restrict)
+
+  @@unique([orgId, workspaceId])
+  @@map("consent_retention_policies")
+  @@schema("public")
+}
+
+/// Do-not-contact registry. Rows are never deleted; lifting is recorded on the row.
+model Suppression {
+  id              String    @id @default(uuid(7)) @db.Uuid
+  orgId           String    @map("org_id") @db.Uuid
+  workspaceId     String    @map("workspace_id") @db.Uuid
+  channel         String // email | sms | whatsapp | all
+  /// Target is either a contact ...
+  contactId       String?   @map("contact_id") @db.Uuid
+  /// ... or an address (survives contact deletion and re-creation).
+  identityKind    String?   @map("identity_kind")
+  valueNormalized String?   @map("value_normalized")
+  reason          String // manual | hard_bounce | complaint | compliance | unsubscribe_request | invalid_address
+  source          String // admin | import | system | api
+  note            String    @default("")
+  /// Unique while active, NULL once lifted: at most one active suppression per target and channel.
+  activeKey       String?   @map("active_key")
+  createdByUserId String?   @map("created_by_user_id") @db.Uuid
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  liftedAt        DateTime? @map("lifted_at") @db.Timestamptz(3)
+  liftedByUserId  String?   @map("lifted_by_user_id") @db.Uuid
+  liftReason      String?   @map("lift_reason")
+
+  workspace Workspace @relation(fields: [orgId, workspaceId], references: [orgId, id], onDelete: Restrict)
+  contact   Contact?  @relation(fields: [orgId, workspaceId, contactId], references: [orgId, workspaceId, id], onDelete: Restrict)
+
+  @@unique([workspaceId, activeKey])
+  @@index([workspaceId, contactId])
+  @@index([workspaceId, identityKind, valueNormalized])
+  @@index([workspaceId, createdAt(sort: Desc), id(sort: Desc)])
+  @@map("suppressions")
+  @@schema("public")
+}
+
+model ContactImport {
+  id              String    @id @default(uuid(7)) @db.Uuid
+  orgId           String    @map("org_id") @db.Uuid
+  workspaceId     String    @map("workspace_id") @db.Uuid
+  /// uploaded | validated | processing | completed | failed | cancelled
+  status          String    @default("uploaded")
+  /// Display only (sanitized). Storage never uses the client file name.
+  fileName        String    @map("file_name")
+  fileSize        Int       @map("file_size")
+  fileSha256      String    @map("file_sha256")
+  delimiter       String    @default(",")
+  headers         Json      @default("[]")
+  mapping         Json      @default("{}")
+  options         Json      @default("{}")
+  totalRows       Int?      @map("total_rows")
+  /// Data rows fully committed; processing resumes after this row on retry.
+  processedRows   Int       @default(0) @map("processed_rows")
+  createdCount    Int       @default(0) @map("created_count")
+  updatedCount    Int       @default(0) @map("updated_count")
+  skippedCount    Int       @default(0) @map("skipped_count")
+  errorCount      Int       @default(0) @map("error_count")
+  dryRunSummary   Json?     @map("dry_run_summary")
+  failureReason   String?   @map("failure_reason")
+  createdByUserId String?   @map("created_by_user_id") @db.Uuid
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+  startedAt       DateTime? @map("started_at") @db.Timestamptz(3)
+  completedAt     DateTime? @map("completed_at") @db.Timestamptz(3)
+  version         Int       @default(1)
+
+  workspace Workspace            @relation(fields: [orgId, workspaceId], references: [orgId, id], onDelete: Restrict)
+  issues    ContactImportIssue[]
+
+  @@unique([orgId, workspaceId, id])
+  @@index([workspaceId, createdAt(sort: Desc), id(sort: Desc)])
+  @@map("contact_imports")
+  @@schema("public")
+}
+
+model ContactImportIssue {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  orgId       String   @map("org_id") @db.Uuid
+  workspaceId String   @map("workspace_id") @db.Uuid
+  importId    String   @map("import_id") @db.Uuid
+  /// 1-based data row number (header excluded).
+  rowNumber   Int      @map("row_number")
+  column      String?
+  code        String
+  message     String
+  severity    String // error | warning
+  /// dry_run issues are replaced by the next dry run; run issues are permanent.
+  phase       String // dry_run | run
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  import ContactImport @relation(fields: [orgId, workspaceId, importId], references: [orgId, workspaceId, id], onDelete: Restrict)
+
+  @@index([importId, phase, rowNumber])
+  @@map("contact_import_issues")
   @@schema("public")
 }

@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import { withOwnerConnection } from '../src/testing.js';
 
-const APPEND_ONLY = ['audit_logs', 'domain_events', 'security_events'];
+const APPEND_ONLY = ['audit_logs', 'domain_events', 'security_events', 'consent_events'];
 const RUNTIME_ROLES = ['workeasy_app', 'workeasy_identity', 'workeasy_reporting'];
 
 describe('database security invariants', () => {
