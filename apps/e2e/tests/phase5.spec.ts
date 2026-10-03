@@ -276,3 +276,36 @@ test('12. a viewer can read contacts but cannot change them (UI hidden, API deni
   expect(upload.status()).toBe(403);
   await vp.context().close();
 });
+
+test('large uploads pass through the web proxy intact; oversize ones get a clean 413', async () => {
+  const ws = (await context(page)).workspace.id;
+  const csrf = (await page.context().cookies()).find((c) => c.name.endsWith('wk_csrf'))!.value;
+  // About 15 MB but under 100,000 rows: must arrive byte-for-byte (the web proxy used to truncate at 10 MB).
+  const rows = 95_000;
+  const lines = ['Email,First name,Company'];
+  for (let i = 0; i < rows; i++) lines.push(`bulk-${i}-${stamp}@example.test,Name${i},${'Company name padding '.repeat(5)}${i}`);
+  const big = Buffer.from(lines.join('\n'));
+  expect(big.length).toBeGreaterThan(12 * 1024 * 1024);
+  const ok = await page.request.post(`/api/v1/workspaces/${ws}/imports?fileName=big.csv`, {
+    data: big,
+    headers: { 'x-csrf-token': csrf, 'content-type': 'text/csv' },
+    timeout: 120_000,
+  });
+  expect(ok.status()).toBe(201);
+  const stored = await ok.json();
+  expect(stored.fileSize).toBe(big.length);
+  expect(stored.totalRows).toBe(rows);
+  await page.request.post(`/api/v1/workspaces/${ws}/imports/${stored.id}/cancel`, { headers: { 'x-csrf-token': csrf } });
+
+  // 21 MB: just over the API limit. 40 MB: over the web proxy's own buffer limit too (it truncates at 32 MB) — must
+  // still be a clean 413, never a hang or a partial import (hardening H-3).
+  for (const mb of [21, 40]) {
+    const r = await page.request.post(`/api/v1/workspaces/${ws}/imports?fileName=huge.csv`, {
+      data: Buffer.alloc(mb * 1024 * 1024, 'a'),
+      headers: { 'x-csrf-token': csrf, 'content-type': 'text/csv' },
+      timeout: 120_000,
+    });
+    expect(r.status(), `${mb} MB`).toBe(413);
+    expect((await r.json()).error.fields.file).toEqual(['FILE_TOO_LARGE']);
+  }
+});

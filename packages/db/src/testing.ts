@@ -68,6 +68,25 @@ export async function withOwnerConnection<T>(fn: (client: pg.Client) => Promise<
   }
 }
 
+/**
+ * Runs `fn` as the API runtime role (workeasy_app) inside a transaction with the given tenant context — exactly what
+ * the API's own connections can do. Always rolled back. For privilege and isolation tests.
+ */
+export async function withAppConnection<T>(ctx: { orgId: string; workspaceId: string | null }, fn: (client: pg.Client) => Promise<T>): Promise<T> {
+  const { app } = testDatabaseUrls();
+  assertTestDb(app);
+  const client = new pg.Client({ connectionString: app, options: '-c TimeZone=UTC' });
+  await client.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`SELECT set_config('app.org_id', $1, true), set_config('app.workspace_id', $2, true)`, [ctx.orgId, ctx.workspaceId ?? '']);
+    return await fn(client);
+  } finally {
+    await client.query('ROLLBACK').catch(() => undefined);
+    await client.end();
+  }
+}
+
 /** Empties every application table (identity + public) except the migration history. */
 export async function resetTestDatabase(): Promise<void> {
   await withOwnerConnection(async (c) => {
