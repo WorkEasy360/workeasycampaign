@@ -5,6 +5,9 @@ import type { AppConfig } from './config/env.js';
 import { ErrorFilter } from './common/error.filter.js';
 import { MemoryRateLimitStore, RATE_LIMIT_STORE, RateLimitGuard, type RateLimitStore, RedisRateLimitStore } from './common/rate-limit.js';
 import { HealthController } from './health/health.controller.js';
+import { InlineJobDispatcher, JOB_DISPATCHER, type JobDispatcher } from './common/jobs.js';
+import { FILE_STORE, type FileStore, LocalFileStore } from './infrastructure/files/file-store.js';
+import { AudienceModule } from './modules/audience/audience.module.js';
 import { MAILER, type Mailer, mailerFactory } from './infrastructure/mail/mailer.js';
 import { APP_CONFIG, DATABASE, databaseFactory } from './infrastructure/providers.js';
 import { AuthenticationGuard } from './modules/identity/http/authentication.guard.js';
@@ -17,6 +20,8 @@ import { OpenApiController } from './openapi/openapi.controller.js';
 export interface InfrastructureOverrides {
   mailer?: Mailer;
   rateLimitStore?: RateLimitStore;
+  jobDispatcher?: JobDispatcher;
+  fileStore?: FileStore;
 }
 
 @Global()
@@ -25,6 +30,7 @@ class InfrastructureModule implements OnApplicationShutdown {
   constructor(
     @Inject(DATABASE) private readonly db: Database,
     @Inject(RATE_LIMIT_STORE) private readonly rateLimits: RateLimitStore,
+    @Inject(JOB_DISPATCHER) private readonly jobs: JobDispatcher,
   ) {}
 
   static forRoot(config: AppConfig, overrides: InfrastructureOverrides): DynamicModule {
@@ -33,6 +39,8 @@ class InfrastructureModule implements OnApplicationShutdown {
       { provide: APP_CONFIG, useValue: config },
       { provide: DATABASE, useFactory: () => databaseFactory(config) },
       { provide: MAILER, useValue: overrides.mailer ?? mailerFactory(config) },
+      { provide: JOB_DISPATCHER, useValue: overrides.jobDispatcher ?? new InlineJobDispatcher() },
+      { provide: FILE_STORE, useValue: overrides.fileStore ?? new LocalFileStore(config.fileStoreDir) },
       {
         provide: RATE_LIMIT_STORE,
         useValue:
@@ -43,6 +51,8 @@ class InfrastructureModule implements OnApplicationShutdown {
   }
 
   async onApplicationShutdown() {
+    // Let in-process jobs finish their current chunk before the database goes away.
+    if (this.jobs instanceof InlineJobDispatcher) await this.jobs.idle();
     await Promise.allSettled([this.db.disconnect(), this.rateLimits.close()]);
   }
 }
@@ -52,7 +62,7 @@ export class AppModule {
   static forRoot(config: AppConfig, overrides: InfrastructureOverrides = {}): DynamicModule {
     return {
       module: AppModule,
-      imports: [InfrastructureModule.forRoot(config, overrides), IdentityModule, TenancyModule],
+      imports: [InfrastructureModule.forRoot(config, overrides), IdentityModule, TenancyModule, AudienceModule],
       controllers: [HealthController, OpenApiController],
       providers: [
         // Global guards run in registration order:

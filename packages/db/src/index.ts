@@ -14,6 +14,8 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { Prisma, PrismaClient } from './generated/prisma/client.js';
 
 export type { Prisma } from './generated/prisma/client.js';
+/** Sets a nullable JSON column to SQL NULL (Prisma distinguishes this from "not provided"). */
+export const DbNull = Prisma.DbNull;
 export type * from './generated/prisma/models.js';
 export {
   sqlStateOf,

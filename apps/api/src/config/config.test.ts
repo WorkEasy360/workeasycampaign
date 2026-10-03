@@ -8,6 +8,8 @@ const prod = {
   NODE_ENV: 'production',
   APP_URL: 'https://app.example.com',
   SESSION_SECRET: 'a'.repeat(48),
+  DATA_FINGERPRINT_SECRET: 'b'.repeat(48),
+  FILE_STORE_DIR: '/var/lib/workeasy/files',
   TRUST_PROXY: '1',
   REDIS_URL: 'redis://r',
   MAIL_TRANSPORT: 'smtp',
@@ -19,7 +21,7 @@ describe('configuration fails closed', () => {
     expect(() => loadConfig({ ...base })).toThrow(/SESSION_SECRET is required in production/);
   });
 
-  it.each(['APP_URL', 'SESSION_SECRET', 'TRUST_PROXY', 'REDIS_URL', 'MAIL_FROM'])(
+  it.each(['APP_URL', 'SESSION_SECRET', 'DATA_FINGERPRINT_SECRET', 'FILE_STORE_DIR', 'TRUST_PROXY', 'REDIS_URL', 'MAIL_FROM'])(
     'production refuses to start without %s',
     (key) => {
       const env: Record<string, string> = { ...prod };

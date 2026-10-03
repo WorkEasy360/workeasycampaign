@@ -30,6 +30,7 @@ const MANAGER_EXCLUDED = new Set<Permission>([
   'integrations.manage',
   'webhooks.manage',
   'scoring.manage',
+  'custom_fields.manage',
 ]);
 const manager = without(WS, (p) => MANAGER_EXCLUDED.has(p));
 const EDITOR_EXCLUDED = new Set<Permission>([
@@ -38,6 +39,7 @@ const EDITOR_EXCLUDED = new Set<Permission>([
   'consent.manage',
   'contacts.delete',
   'contacts.import',
+  'suppression.manage',
 ]);
 const editor = without(manager, (p) => EDITOR_EXCLUDED.has(p) || p.endsWith('.export'));
 
@@ -99,6 +101,19 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
     permissions: reads(WS),
   },
 ];
+
+/**
+ * Effective permissions of a role. Built-in roles ALWAYS use the code definition above, never the snapshot stored
+ * when the organization was created — so adding a permission to the catalogue reaches every existing organization.
+ * Custom roles use their stored permissions.
+ */
+export function effectiveRolePermissions(role: { isSystem: boolean; key: string | null; permissions: readonly string[] }): string[] {
+  if (role.isSystem && role.key) {
+    const def = SYSTEM_ROLES.find((r) => r.key === role.key);
+    if (def) return def.permissions;
+  }
+  return [...role.permissions];
+}
 
 export const systemRole = (key: string): SystemRoleDefinition => {
   const r = SYSTEM_ROLES.find((x) => x.key === key);

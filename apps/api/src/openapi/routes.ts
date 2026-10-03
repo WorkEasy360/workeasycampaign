@@ -23,6 +23,7 @@ import {
   verifyEmailRequest,
 } from '@workeasy/shared';
 import type { z } from 'zod';
+import { AUDIENCE_ROUTES } from './routes-audience.js';
 
 export interface RouteDoc {
   method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -101,4 +102,5 @@ export const ROUTES: RouteDoc[] = [
 
   r({ method: 'GET', path: '/v1/organizations/{orgId}/audit-logs', tag: 'Audit', summary: 'Audit log (cursor paginated, filterable)', access: 'organization:audit.read', query: auditLogQuery, success: 200 }),
   r({ method: 'GET', path: '/v1/organizations/{orgId}/audit-logs/export', tag: 'Audit', summary: 'Export audit log as CSV (audited)', access: 'organization:audit.export', query: auditLogQuery, success: 200 }),
+  ...AUDIENCE_ROUTES,
 ];

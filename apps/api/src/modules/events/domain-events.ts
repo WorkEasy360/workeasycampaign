@@ -13,6 +13,37 @@ export interface EventOrigin {
   causationId?: string | null;
 }
 
+/** Many events of one type in one statement (bulk operations, imports). Same guarantees as appendDomainEvent. */
+export async function appendDomainEvents<T extends DomainEventType>(
+  tx: Tx,
+  origin: EventOrigin,
+  type: T,
+  items: { aggregateId: string; payload: DomainEventPayload<T>; workspaceId?: string | null }[],
+): Promise<void> {
+  if (!items.length) return;
+  const def = DOMAIN_EVENTS[type];
+  const now = new Date();
+  await tx.domainEvent.createMany({
+    data: items.map((i) => ({
+      id: uuidv7(),
+      orgId: origin.orgId,
+      workspaceId: i.workspaceId ?? null,
+      type,
+      version: def.version,
+      aggregateType: def.aggregate,
+      aggregateId: i.aggregateId,
+      actorType: origin.actorType,
+      actorId: origin.actorId,
+      source: origin.source,
+      correlationId: origin.correlationId,
+      causationId: origin.causationId ?? null,
+      idempotencyKey: null,
+      payload: def.payload.parse(i.payload),
+      occurredAt: now,
+    })),
+  });
+}
+
 /**
  * Append a domain event in the SAME transaction as the state change it describes (transactional outbox):
  * either both are committed or neither is. Returns the event id (usable as causationId for follow-ups).

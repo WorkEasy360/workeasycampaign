@@ -8,6 +8,7 @@ import { DATABASE } from '../../../infrastructure/providers.js';
 import { slugify, withSuffix } from '../domain/slug.js';
 import { SYSTEM_ROLES } from '../domain/system-roles.js';
 import { inTenant } from './tenant-tx.js';
+import { ensureDefaultTopic } from '../../audience/application/topics-fields.service.js';
 
 export const toWorkspaceView = (w: {
   id: string;
@@ -60,8 +61,9 @@ export class OrganizationsService {
       access: { orgId, workspaceId: null, orgRoleKey: 'owner', permissions: new Set(), workspaceAccess: null },
     };
 
+    let created;
     try {
-      return await inTenant(this.db, tctx, async ({ tx, audit, event }) => {
+      created = await inTenant(this.db, tctx, async ({ tx, audit, event }) => {
         const org = await tx.organization.create({
           data: { id: orgId, name: input.name, slug, createdByUserId: ctx.principal.userId },
         });
@@ -99,6 +101,9 @@ export class OrganizationsService {
       if (isUniqueViolation(err)) throw Errors.conflict('That address is already taken', { slug: ['Choose another address'] });
       throw err;
     }
+    // Workspace-owned defaults need a workspace context (RLS), so they are written right after the organization.
+    await this.db.withTenant({ orgId, workspaceId, userId: ctx.principal.userId }, (tx) => ensureDefaultTopic(tx, orgId, workspaceId));
+    return created;
   }
 
   async get(ctx: TenantRequestContext): Promise<OrganizationView> {

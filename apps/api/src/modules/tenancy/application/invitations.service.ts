@@ -9,6 +9,7 @@ import { Mail } from '../../../infrastructure/mail/templates.js';
 import { APP_CONFIG, DATABASE } from '../../../infrastructure/providers.js';
 import { hashToken, newToken } from '../../../infrastructure/tokens.js';
 import { canGrant } from '../domain/access-policy.js';
+import { effectiveRolePermissions } from '../domain/system-roles.js';
 import { AccessService } from './access.service.js';
 import { inTenant } from './tenant-tx.js';
 
@@ -50,7 +51,7 @@ export class InvitationsService {
         actorPermissions: ctx.access.permissions,
         actorIsOwner,
         targetRoleKey: role.key,
-        targetPermissions: role.permissions,
+        targetPermissions: effectiveRolePermissions(role),
         scope: 'organization',
       });
       if (!orgGrant.ok) throw Errors.forbidden(orgGrant.reason);
@@ -65,7 +66,7 @@ export class InvitationsService {
           actorPermissions,
           actorIsOwner,
           targetRoleKey: wsRole.key,
-          targetPermissions: wsRole.permissions,
+          targetPermissions: effectiveRolePermissions(wsRole),
           scope: 'workspace',
         });
         if (!ok.ok) throw Errors.forbidden(ok.reason);

@@ -80,19 +80,20 @@ export class Agent {
     method: string,
     url: string,
     body?: unknown,
-    opts: { headers?: Record<string, string>; csrf?: boolean } = {},
+    opts: { headers?: Record<string, string>; csrf?: boolean; raw?: { body: string | Buffer; contentType: string } } = {},
   ): Promise<Res<T>> {
     const unsafe = !['GET', 'HEAD'].includes(method);
     if (unsafe && opts.csrf !== false && !this.cookies.has('wk_csrf')) await this.request('GET', '/v1/auth/csrf');
     const headers: Record<string, string> = { ...(opts.headers ?? {}) };
     if (this.cookies.size) headers.cookie = [...this.cookies].map(([k, v]) => `${k}=${v}`).join('; ');
     if (unsafe && opts.csrf !== false && this.cookies.get('wk_csrf')) headers['x-csrf-token'] = this.cookies.get('wk_csrf')!;
-    if (body !== undefined) headers['content-type'] = 'application/json';
+    if (opts.raw) headers['content-type'] = opts.raw.contentType;
+    else if (body !== undefined) headers['content-type'] = 'application/json';
     const res = await this.t.app.getHttpAdapter().getInstance().inject({
       method: method as 'GET',
       url,
       headers,
-      payload: body === undefined ? undefined : JSON.stringify(body),
+      payload: opts.raw ? opts.raw.body : body === undefined ? undefined : JSON.stringify(body),
       remoteAddress: this.ip,
     });
     const raw = res.headers['set-cookie'];
@@ -188,4 +189,22 @@ export async function inviteAndAccept(
   if (inv.status !== 201) throw new Error(`invite failed: ${inv.status} ${JSON.stringify(inv.body)}`);
   const accepted = await invitee.post('/v1/invitations/accept', { token: t.mailer.tokenFrom(emailOf(invitee), 'invitation') });
   if (accepted.status !== 200) throw new Error(`accept failed: ${accepted.status} ${JSON.stringify(accepted.body)}`);
+}
+
+/** Uploads CSV text (or bytes) as an import. */
+export function uploadCsv(agent: Agent, workspaceId: string, csv: string | Buffer, fileName = 'contacts.csv') {
+  return agent.request('POST', `/v1/workspaces/${workspaceId}/imports?fileName=${encodeURIComponent(fileName)}`, undefined, {
+    raw: { body: csv, contentType: 'text/csv' },
+  });
+}
+
+/** Polls an import until it leaves "processing" (background job). */
+export async function waitForImport(agent: Agent, workspaceId: string, importId: string, timeoutMs = 30_000) {
+  const until = Date.now() + timeoutMs;
+  for (;;) {
+    const r = await agent.get(`/v1/workspaces/${workspaceId}/imports/${importId}`);
+    if (r.body.status !== 'processing') return r.body;
+    if (Date.now() > until) throw new Error('import did not finish in time');
+    await new Promise((res) => setTimeout(res, 100));
+  }
 }

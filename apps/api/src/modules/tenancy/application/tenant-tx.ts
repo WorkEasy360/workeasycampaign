@@ -1,7 +1,7 @@
 import type { Database, Tx, TxOptions } from '@workeasy/db';
 import type { TenantRequestContext } from '../../../common/request-context.js';
 import { recordAudit, type AuditEntry } from '../../audit/audit.js';
-import { appendDomainEvent, type EventOrigin } from '../../events/domain-events.js';
+import { appendDomainEvent, appendDomainEvents, type EventOrigin } from '../../events/domain-events.js';
 import type { DomainEventPayload, DomainEventType } from '../../events/catalogue.js';
 
 /**
@@ -17,20 +17,24 @@ export interface TenantUnitOfWork {
     payload: DomainEventPayload<T>,
     opts?: { workspaceId?: string | null },
   ): Promise<string>;
+  /** Batch variant: one event per aggregate, all in this transaction. */
+  events<T extends DomainEventType>(type: T, items: { aggregateId: string; payload: DomainEventPayload<T> }[]): Promise<void>;
+  /** Origin used for events written by this unit of work. */
+  origin: EventOrigin;
 }
 
 export function inTenant<T>(
   db: Database,
   ctx: TenantRequestContext,
   fn: (uow: TenantUnitOfWork) => Promise<T>,
-  options?: TxOptions & { workspaceScoped?: boolean },
+  options?: TxOptions & { workspaceScoped?: boolean; /** Event source (default "api"); background jobs pass e.g. "import". */ source?: string },
 ): Promise<T> {
   const { orgId, workspaceId } = ctx.access;
   const origin: EventOrigin = {
     orgId,
     actorType: 'user',
     actorId: ctx.principal.userId,
-    source: 'api',
+    source: options?.source ?? 'api',
     correlationId: ctx.meta.requestId,
   };
   return db.withTenant(
@@ -42,6 +46,8 @@ export function inTenant<T>(
           recordAudit(tx, { orgId, principal: ctx.principal, meta: ctx.meta }, { workspaceId, ...entry }),
         event: (type, aggregateId, payload, opts) =>
           appendDomainEvent(tx, origin, { type, aggregateId, payload, workspaceId: opts?.workspaceId ?? workspaceId }),
+        events: (type, items) => appendDomainEvents(tx, origin, type, items.map((i) => ({ ...i, workspaceId }))),
+        origin,
       }),
     options,
   );

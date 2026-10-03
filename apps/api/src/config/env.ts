@@ -12,6 +12,7 @@ import { parseTrustProxy, type TrustProxySetting } from './trust-proxy.js';
  */
 const DEVELOPMENT_DEFAULTS = {
   SESSION_SECRET: 'development-only-session-secret-do-not-use-in-production-0000',
+  DATA_FINGERPRINT_SECRET: 'development-only-fingerprint-secret-do-not-use-in-production',
   // Next.js dev server proxies /api from the same machine.
   TRUST_PROXY: 'loopback',
   APP_URL: 'http://localhost:3000',
@@ -30,6 +31,12 @@ const schema = z
     DATABASE_URL: z.string().min(1),
     IDENTITY_DATABASE_URL: z.string().min(1),
     SESSION_SECRET: z.string().min(32, { error: 'SESSION_SECRET must be at least 32 characters' }).optional(),
+    /** Keyed hash for consent-evidence fingerprints (survive erasure without storing addresses). Do not rotate casually. */
+    DATA_FINGERPRINT_SECRET: z.string().min(32, { error: 'DATA_FINGERPRINT_SECRET must be at least 32 characters' }).optional(),
+    /** Where uploaded files (CSV imports) are stored. Development default: <repo>/.data/files. */
+    FILE_STORE_DIR: z.string().optional(),
+    IMPORT_MAX_BYTES: z.coerce.number().int().min(1024).max(200 * 1024 * 1024).default(20 * 1024 * 1024),
+    IMPORT_MAX_ROWS: z.coerce.number().int().min(1).max(1_000_000).default(100_000),
     TRUST_PROXY: z.string().optional(),
     REDIS_URL: z.string().optional(),
     MAIL_TRANSPORT: z.enum(['smtp', 'file']).optional(),
@@ -42,11 +49,11 @@ const schema = z
   })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV !== 'production') return;
-    const required = ['APP_URL', 'SESSION_SECRET', 'TRUST_PROXY', 'REDIS_URL', 'MAIL_FROM'] as const;
+    const required = ['APP_URL', 'SESSION_SECRET', 'DATA_FINGERPRINT_SECRET', 'FILE_STORE_DIR', 'TRUST_PROXY', 'REDIS_URL', 'MAIL_FROM'] as const;
     for (const key of required) {
       if (!env[key]) ctx.addIssue({ code: 'custom', path: [key], message: `${key} is required in production` });
     }
-    if (env.SESSION_SECRET?.includes('development-only')) {
+    if (env.SESSION_SECRET?.includes('development-only') || env.DATA_FINGERPRINT_SECRET?.includes('development-only')) {
       ctx.addIssue({ code: 'custom', path: ['SESSION_SECRET'], message: 'development secret used in production' });
     }
     if (env.MAIL_TRANSPORT !== 'smtp') {
@@ -67,6 +74,9 @@ export interface AppConfig {
   databaseUrl: string;
   identityDatabaseUrl: string;
   sessionSecret: string;
+  fingerprintSecret: string;
+  fileStoreDir: string;
+  imports: { maxBytes: number; maxRows: number };
   trustProxy: TrustProxySetting;
   redisUrl: string | null;
   cookies: { secure: boolean; sessionName: string; csrfName: string };
@@ -104,6 +114,9 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     databaseUrl: e.DATABASE_URL,
     identityDatabaseUrl: e.IDENTITY_DATABASE_URL,
     sessionSecret: pick('SESSION_SECRET', e.SESSION_SECRET),
+    fingerprintSecret: pick('DATA_FINGERPRINT_SECRET', e.DATA_FINGERPRINT_SECRET),
+    fileStoreDir: e.FILE_STORE_DIR || resolve(repoRoot, '.data', 'files'),
+    imports: { maxBytes: e.IMPORT_MAX_BYTES, maxRows: e.IMPORT_MAX_ROWS },
     trustProxy: parseTrustProxy(pick('TRUST_PROXY', e.TRUST_PROXY)),
     redisUrl: e.REDIS_URL ?? null,
     cookies: isProduction

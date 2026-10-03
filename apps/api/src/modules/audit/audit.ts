@@ -26,7 +26,21 @@ export type AuditAction =
   | 'role.updated'
   | 'role.deleted'
   | 'access.denied'
-  | 'audit.exported';
+  | 'audit.exported'
+  // Audience (Phase 5): sensitive or bulk actions. Routine edits are covered by domain events.
+  | 'contact.erased'
+  | 'contacts.bulk_action'
+  | 'suppression.added'
+  | 'suppression.lifted'
+  | 'custom_field.archived'
+  | 'custom_field.deleted'
+  | 'consent.recorded_by_staff'
+  | 'consent.retention_policy_updated'
+  | 'consent.retention_purged'
+  | 'import.started'
+  | 'import.completed'
+  | 'import.failed'
+  | 'import.cancelled';
 
 export interface AuditEntry {
   action: AuditAction;

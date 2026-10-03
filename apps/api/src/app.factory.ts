@@ -38,6 +38,8 @@ export async function createApp(config: AppConfig, overrides: InfrastructureOver
   });
 
   const fastify = app.getHttpAdapter().getInstance();
+  // CSV uploads are passed to the controller as a stream (size, encoding and syntax are enforced while streaming).
+  fastify.addContentTypeParser('text/csv', (_req, payload, done) => done(null, payload));
   // Route inventory (populated when Nest registers routes during init) — checked against the OpenAPI registry.
   const routes: { method: string; url: string }[] = [];
   fastify.addHook('onRoute', (r) => {

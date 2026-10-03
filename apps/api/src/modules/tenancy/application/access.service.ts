@@ -4,6 +4,7 @@ import type { AccessContext } from '../../../common/request-context.js';
 import { DATABASE } from '../../../infrastructure/providers.js';
 import type { AuthenticatedPrincipal } from '../../identity/domain/principal.js';
 import { organizationPermissions, workspacePermissions } from '../domain/access-policy.js';
+import { effectiveRolePermissions } from '../domain/system-roles.js';
 
 /**
  * Resolves what a principal may do in an organization/workspace. Never trusts ids from the client on their own:
@@ -32,9 +33,9 @@ export class AccessService {
       if (!workspace) return null;
       const m = await tx.workspaceMembership.findUnique({
         where: { workspaceId_userId: { workspaceId, userId: principal.userId } },
-        select: { role: { select: { permissions: true } } },
+        select: { role: { select: { permissions: true, isSystem: true, key: true } } },
       });
-      return { status: workspace.status, rolePermissions: m?.role.permissions ?? null };
+      return { status: workspace.status, rolePermissions: m ? effectiveRolePermissions(m.role) : null };
     });
     if (!ws) return null;
     const result = workspacePermissions({
@@ -52,12 +53,12 @@ export class AccessService {
     return this.db.withTenant({ orgId, workspaceId: null, userId }, async (tx) => {
       const m = await tx.organizationMembership.findUnique({
         where: { orgId_userId: { orgId, userId } },
-        select: { status: true, role: { select: { key: true, permissions: true } } },
+        select: { status: true, role: { select: { key: true, permissions: true, isSystem: true } } },
       });
       if (!m || m.status !== 'active') return null;
       const org = await tx.organization.findUnique({ where: { id: orgId }, select: { status: true } });
       if (org?.status !== 'active') return null;
-      return { status: m.status, roleKey: m.role.key, rolePermissions: m.role.permissions };
+      return { status: m.status, roleKey: m.role.key, rolePermissions: effectiveRolePermissions(m.role) };
     });
   }
 
@@ -73,12 +74,12 @@ export class AccessService {
       }),
       orgMemberships: await tx.organizationMembership.findMany({
         where: { userId, status: 'active' },
-        select: { orgId: true, role: { select: { permissions: true } } },
+        select: { orgId: true, role: { select: { permissions: true, isSystem: true, key: true } } },
       }),
     }));
     if (own.wsMembership) return own.wsMembership.orgId;
     for (const m of own.orgMemberships) {
-      if (!m.role.permissions.includes('workspaces.access_all')) continue;
+      if (!effectiveRolePermissions(m.role).includes('workspaces.access_all')) continue;
       const found = await this.db.withTenant({ orgId: m.orgId, workspaceId: null, userId }, (tx) =>
         tx.workspace.findUnique({ where: { id: workspaceId }, select: { id: true } }),
       );

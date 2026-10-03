@@ -7,6 +7,7 @@ import { DATABASE } from '../../../infrastructure/providers.js';
 import { slugify, withSuffix } from '../domain/slug.js';
 import { toWorkspaceView } from './organizations.service.js';
 import { inTenant } from './tenant-tx.js';
+import { ensureDefaultTopic } from '../../audience/application/topics-fields.service.js';
 
 @Injectable()
 export class WorkspacesService {
@@ -25,6 +26,14 @@ export class WorkspacesService {
   }
 
   async create(ctx: TenantRequestContext, input: { name: string; timezone: string }): Promise<WorkspaceView> {
+    const view = await this.createWorkspace(ctx, input);
+    await this.db.withTenant({ orgId: ctx.access.orgId, workspaceId: view.id, userId: ctx.principal.userId }, (tx) =>
+      ensureDefaultTopic(tx, ctx.access.orgId, view.id),
+    );
+    return view;
+  }
+
+  private async createWorkspace(ctx: TenantRequestContext, input: { name: string; timezone: string }): Promise<WorkspaceView> {
     try {
       return await inTenant(this.db, ctx, async ({ tx, audit, event }) => {
         const slug = await this.freeSlug(tx, slugify(input.name));

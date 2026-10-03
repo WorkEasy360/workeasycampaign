@@ -6,6 +6,7 @@ import { decodeCursor, pageOf } from '../../../common/pagination.js';
 import type { TenantRequestContext } from '../../../common/request-context.js';
 import { DATABASE } from '../../../infrastructure/providers.js';
 import { canGrant } from '../domain/access-policy.js';
+import { effectiveRolePermissions } from '../domain/system-roles.js';
 import { inTenant } from './tenant-tx.js';
 
 const OWNER = 'owner';
@@ -78,7 +79,7 @@ export class MembersService {
             actorPermissions: ctx.access.permissions,
             actorIsOwner,
             targetRoleKey: role.key,
-            targetPermissions: role.permissions,
+            targetPermissions: effectiveRolePermissions(role),
             scope: 'organization',
           });
           if (!grant.ok) throw Errors.forbidden(grant.reason);
@@ -152,12 +153,21 @@ export class MembersService {
       });
       // Members whose organization role administers every workspace have access without an explicit membership.
       const implicit = await tx.organizationMembership.findMany({
-        where: { orgId: ctx.access.orgId, status: 'active', role: { permissions: { has: 'workspaces.access_all' } } },
-        include: { user: { select: { email: true, displayName: true } }, role: { select: { id: true, name: true } } },
-      });
+        where: { orgId: ctx.access.orgId, status: 'active' },
+        include: {
+          user: { select: { email: true, displayName: true } },
+          role: { select: { id: true, name: true, isSystem: true, key: true, permissions: true } },
+        },
+      }).then((rows) => rows.filter((m) => effectiveRolePermissions(m.role).includes('workspaces.access_all')));
       const byUser = new Map<string, WorkspaceMemberView>();
       for (const m of implicit) {
-        byUser.set(m.userId, { userId: m.userId, email: m.user.email, displayName: m.user.displayName, role: m.role, access: 'organization' });
+        byUser.set(m.userId, {
+          userId: m.userId,
+          email: m.user.email,
+          displayName: m.user.displayName,
+          role: { id: m.role.id, name: m.role.name },
+          access: 'organization',
+        });
       }
       for (const m of explicit) {
         if (!byUser.has(m.userId)) {
@@ -184,7 +194,7 @@ export class MembersService {
         actorPermissions: ctx.access.permissions,
         actorIsOwner: ctx.access.orgRoleKey === OWNER,
         targetRoleKey: role.key,
-        targetPermissions: role.permissions,
+        targetPermissions: effectiveRolePermissions(role),
         scope: 'workspace',
       });
       if (!grant.ok) throw Errors.forbidden(grant.reason);
@@ -211,7 +221,7 @@ export class MembersService {
       const workspaceId = ctx.access.workspaceId!;
       const existing = await tx.workspaceMembership.findUnique({
         where: { workspaceId_userId: { workspaceId, userId } },
-        include: { role: { select: { permissions: true, key: true } }, user: { select: { email: true } } },
+        include: { role: { select: { permissions: true, key: true, isSystem: true } }, user: { select: { email: true } } },
       });
       if (!existing) throw Errors.notFound('Workspace member');
       // Removing someone requires being able to grant what they hold (a manager cannot remove a workspace admin).
@@ -219,7 +229,7 @@ export class MembersService {
         actorPermissions: ctx.access.permissions,
         actorIsOwner: ctx.access.orgRoleKey === OWNER,
         targetRoleKey: existing.role.key,
-        targetPermissions: existing.role.permissions,
+        targetPermissions: effectiveRolePermissions(existing.role),
         scope: 'workspace',
       });
       if (!grant.ok) throw Errors.forbidden('You cannot remove someone with more access than you');
@@ -234,7 +244,7 @@ export class MembersService {
   private async loadMember(tx: Tx, orgId: string, userId: string) {
     const m = await tx.organizationMembership.findUnique({
       where: { orgId_userId: { orgId, userId } },
-      include: { role: { select: { key: true, permissions: true } }, user: { select: { email: true } } },
+      include: { role: { select: { key: true, permissions: true, isSystem: true } }, user: { select: { email: true } } },
     });
     if (!m || m.status === 'removed') throw Errors.notFound('Member');
     return m;

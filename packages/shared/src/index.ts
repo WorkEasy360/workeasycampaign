@@ -6,3 +6,4 @@ export * from './campaigns.js';
 export * from './api/common.js';
 export * from './api/auth.js';
 export * from './api/tenancy.js';
+export * from './api/audience.js';

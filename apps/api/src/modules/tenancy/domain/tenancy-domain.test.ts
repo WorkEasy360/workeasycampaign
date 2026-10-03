@@ -2,7 +2,7 @@ import { PERMISSIONS, permissionsForScope } from '@workeasy/shared';
 import { describe, expect, it } from 'vitest';
 import { canGrant, organizationPermissions, workspacePermissions } from './access-policy.js';
 import { slugify } from './slug.js';
-import { SYSTEM_ROLES, systemRole } from './system-roles.js';
+import { effectiveRolePermissions, SYSTEM_ROLES, systemRole } from './system-roles.js';
 
 const perms = (key: string) => systemRole(key).permissions;
 
@@ -115,5 +115,24 @@ describe('slugify', () => {
     expect(slugify('Acme Marketing, Inc.')).toBe('acme-marketing-inc');
     expect(slugify('Café Déjà Vu')).toBe('cafe-deja-vu');
     expect(slugify('!!')).toMatch(/^org-[a-z0-9]{4}$/);
+  });
+});
+
+describe('built-in role permissions come from code', () => {
+  it('ignores a stale stored snapshot for built-in roles, so new catalogue permissions reach existing organizations', () => {
+    const stale = { isSystem: true, key: 'manager', permissions: ['campaigns.read'] };
+    expect(effectiveRolePermissions(stale)).toEqual(systemRole('manager').permissions);
+    expect(effectiveRolePermissions(stale)).toContain('tags.manage');
+  });
+  it('uses stored permissions for custom roles', () => {
+    expect(effectiveRolePermissions({ isSystem: false, key: null, permissions: ['contacts.read'] })).toEqual(['contacts.read']);
+  });
+  it('places audience permissions deliberately', () => {
+    expect(perms('manager')).toEqual(expect.arrayContaining(['contacts.import', 'lists.manage', 'tags.manage', 'suppression.manage']));
+    expect(perms('manager')).not.toContain('custom_fields.manage');
+    expect(perms('workspace_admin')).toContain('custom_fields.manage');
+    expect(perms('editor')).toEqual(expect.arrayContaining(['contacts.create', 'lists.manage', 'tags.manage']));
+    for (const p of ['contacts.import', 'contacts.delete', 'suppression.manage', 'consent.manage', 'contacts.export']) expect(perms('editor')).not.toContain(p);
+    expect(perms('viewer')).toEqual(expect.arrayContaining(['contacts.read', 'suppression.read', 'tags.read']));
   });
 });

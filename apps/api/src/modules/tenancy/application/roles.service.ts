@@ -5,6 +5,7 @@ import { Errors } from '../../../common/errors.js';
 import type { TenantRequestContext } from '../../../common/request-context.js';
 import { DATABASE } from '../../../infrastructure/providers.js';
 import { canGrant } from '../domain/access-policy.js';
+import { effectiveRolePermissions } from '../domain/system-roles.js';
 import { inTenant } from './tenant-tx.js';
 
 @Injectable()
@@ -27,7 +28,7 @@ export class RolesService {
         description: r.description,
         scope: r.scope as PermissionScope,
         isSystem: r.isSystem,
-        permissions: r.permissions.filter(isPermission),
+        permissions: effectiveRolePermissions(r).filter(isPermission),
         version: r.version,
         memberCount: r._count.organizationMemberships + r._count.workspaceMemberships,
       }));
