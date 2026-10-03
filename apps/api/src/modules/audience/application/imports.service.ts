@@ -18,6 +18,32 @@ import { ImportProcessor, type ImportJob, importStorageKey } from './import-proc
 export const IMPORT_JOB = 'contacts.import';
 /** A "processing" import untouched for this long is considered stalled (e.g. the API restarted) and may be retried. */
 export const STALLED_AFTER_MS = 5 * 60_000;
+/** Imports holding a file (uploaded, validated, processing, failed) per workspace. Bounds disk use (finding M-4). */
+export const MAX_OPEN_IMPORTS = 10;
+/** Abandoned uploads (never started) are cancelled and their file deleted after this long. */
+export const ABANDONED_AFTER_MS = 24 * 3600_000;
+/** Failed imports keep their file for retry this long, then are cancelled and the file deleted. */
+export const FAILED_KEPT_MS = 7 * 24 * 3600_000;
+const OPEN_STATUSES = ['uploaded', 'validated', 'processing', 'failed'];
+
+/**
+ * Import options act on lists, tags, topics and consent. contacts.import alone must not grant those: each option
+ * needs the permission the equivalent direct action needs (finding M-3; built-in roles already pair them, custom
+ * roles may not).
+ */
+export function optionPermissionProblems(permissions: ReadonlySet<string>, options: Partial<ImportOptions>): Record<string, string[]> {
+  const problems: Record<string, string[]> = {};
+  if (options.listIds?.length && !permissions.has('lists.manage')) problems['options.listIds'] = ['Adding contacts to lists needs the lists.manage permission'];
+  if (options.tagIds?.length && !permissions.has('tags.manage')) problems['options.tagIds'] = ['Tagging contacts needs the tags.manage permission'];
+  if (options.topicIds?.length && !permissions.has('consent.manage')) problems['options.topicIds'] = ['Subscribing contacts to topics needs the consent.manage permission'];
+  if (options.consent && !permissions.has('consent.manage')) problems['options.consent'] = ['Recording consent needs the consent.manage permission'];
+  return problems;
+}
+
+function assertOptionPermissions(permissions: ReadonlySet<string>, options: Partial<ImportOptions>) {
+  const denied = optionPermissionProblems(permissions, options);
+  if (Object.keys(denied).length) throw new AppError('forbidden', 403, 'You do not have permission for some import options', denied);
+}
 
 type ImportRow = {
   id: string;
@@ -58,6 +84,12 @@ export class ImportsService {
   async upload(ctx: TenantRequestContext, fileName: string | undefined, body: Readable): Promise<ImportView> {
     const id = uuidv7();
     const workspaceId = ctx.access.workspaceId!;
+    await this.expireStale(ctx);
+    const open = await inTenant(this.db, ctx, ({ tx }) => tx.contactImport.count({ where: { status: { in: OPEN_STATUSES } } }));
+    if (open >= MAX_OPEN_IMPORTS) {
+      body.resume(); // discard the upload so the client receives the error instead of a reset connection
+      throw new AppError('conflict', 409, `This workspace already has ${MAX_OPEN_IMPORTS} unfinished imports. Finish or cancel one first.`, { file: ['TOO_MANY_OPEN_IMPORTS'] });
+    }
     const key = importStorageKey(workspaceId, id);
     const stored = await this.files.save(key, body, { maxBytes: this.config.imports.maxBytes, validateUtf8: true });
     try {
@@ -90,6 +122,7 @@ export class ImportsService {
   }
 
   async list(ctx: TenantRequestContext, limit: number, cursor?: string) {
+    await this.expireStale(ctx);
     return inTenant(this.db, ctx, async ({ tx }) => {
       const c = decodeCursor(cursor);
       const rows = await tx.contactImport.findMany({
@@ -124,6 +157,7 @@ export class ImportsService {
     return inTenant(this.db, ctx, async ({ tx }) => {
       const imp = await this.require(tx, importId);
       if (imp.status !== 'uploaded' && imp.status !== 'validated') throw Errors.precondition('The mapping can only change before the import starts');
+      assertOptionPermissions(ctx.access.permissions, input.options);
       await this.validateMapping(tx, imp.headers as string[], input);
       const r = await tx.contactImport.updateMany({
         where: { id: importId, version: input.version },
@@ -151,6 +185,10 @@ export class ImportsService {
     const view = await inTenant(this.db, ctx, async ({ tx, event, audit }) => {
       const imp = await this.require(tx, importId);
       if (imp.status !== 'validated') throw Errors.precondition('Run a dry run first, review the result, then start the import');
+      // Permissions may have changed since the mapping was saved; lists, tags or topics may have been archived since.
+      assertOptionPermissions(ctx.access.permissions, imp.options as Partial<ImportOptions>);
+      await this.validateMapping(tx, imp.headers as string[], { mapping: imp.mapping as Record<string, string>, options: imp.options as ImportOptions, version: imp.version });
+      await this.assertNoOtherRunning(tx, imp.workspaceId, importId);
       await tx.contactImport.update({ where: { id: importId }, data: { status: 'processing', startedAt: new Date(), updatedAt: new Date(), version: { increment: 1 } } });
       await event('import.started', importId, { totalRows: imp.totalRows });
       await audit({ action: 'import.started', targetType: 'import', targetId: importId, metadata: { fileName: imp.fileName, totalRows: imp.totalRows, sha256: (imp as { fileSha256?: string }).fileSha256 } });
@@ -166,6 +204,8 @@ export class ImportsService {
       const imp = await this.require(tx, importId);
       const stalled = imp.status === 'processing' && Date.now() - imp.updatedAt.getTime() > STALLED_AFTER_MS;
       if (imp.status !== 'failed' && !stalled) throw Errors.precondition('Only a failed or stalled import can be retried');
+      assertOptionPermissions(ctx.access.permissions, imp.options as Partial<ImportOptions>);
+      await this.assertNoOtherRunning(tx, imp.workspaceId, importId);
       await tx.contactImport.update({ where: { id: importId }, data: { status: 'processing', failureReason: null, updatedAt: new Date(), version: { increment: 1 } } });
       return this.view(await this.require(tx, importId));
     });
@@ -213,6 +253,56 @@ export class ImportsService {
   }
 
   // ─── internals ────────────────────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * One import runs at a time per workspace (finding M-5): concurrent imports of overlapping files would race for
+   * the same addresses (one would fail on the unique constraint) and double the load. A transaction-scoped advisory
+   * lock serializes the check, so two simultaneous starts cannot both pass.
+   */
+  private async assertNoOtherRunning(tx: Tx, workspaceId: string, importId: string) {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended('contact-import:' || ${workspaceId}, 0))`;
+    const running = await tx.contactImport.count({ where: { status: 'processing', id: { not: importId } } });
+    if (running) {
+      throw new AppError('conflict', 409, 'Another import is running in this workspace. Wait for it to finish, or cancel it.', { import: ['IMPORT_IN_PROGRESS'] });
+    }
+  }
+
+  /**
+   * Abandoned and long-failed imports are cancelled and their files deleted (finding M-4). Runs, scoped to the
+   * calling workspace, whenever imports are listed or uploaded, so no scheduler is needed for it to happen.
+   */
+  private async expireStale(ctx: TenantRequestContext) {
+    const now = Date.now();
+    const stale = await inTenant(this.db, ctx, ({ tx }) =>
+      tx.contactImport.findMany({
+        where: {
+          OR: [
+            { status: { in: ['uploaded', 'validated'] }, updatedAt: { lt: new Date(now - ABANDONED_AFTER_MS) } },
+            { status: 'failed', updatedAt: { lt: new Date(now - FAILED_KEPT_MS) } },
+          ],
+        },
+        select: { id: true, status: true, workspaceId: true, processedRows: true },
+        take: 50,
+      }),
+    );
+    for (const imp of stale) {
+      await inTenant(this.db, ctx, async ({ tx, audit }) => {
+        const done = await tx.contactImport.updateMany({
+          where: { id: imp.id, status: imp.status },
+          data: { status: 'cancelled', completedAt: new Date(), updatedAt: new Date(), version: { increment: 1 } },
+        });
+        if (done.count === 1) {
+          await audit({
+            action: 'import.cancelled',
+            targetType: 'import',
+            targetId: imp.id,
+            metadata: { processedRows: imp.processedRows, reason: imp.status === 'failed' ? 'failed_expired' : 'abandoned' },
+          });
+        }
+      });
+      await this.files.remove(importStorageKey(imp.workspaceId, imp.id));
+    }
+  }
 
   private dispatch(ctx: TenantRequestContext, importId: string) {
     const job: ImportJob = {

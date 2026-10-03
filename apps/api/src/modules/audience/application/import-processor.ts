@@ -16,6 +16,22 @@ import { CSV_LIMITS, readRows } from '../infrastructure/csv.js';
 
 export const IMPORT_CHUNK = 250;
 export const MAX_ISSUES_PER_PHASE = 5000;
+/** Attempts per chunk before the import is marked failed (finding M-6). */
+export const CHUNK_ATTEMPTS = 3;
+
+/**
+ * Errors worth retrying: the chunk transaction expired or could not start (e.g. the process was paused), the
+ * connection dropped, or PostgreSQL reported a serialization failure or deadlock. Safe to retry because a chunk is
+ * one transaction (all or nothing) and re-checks the checkpoint under a row lock before applying.
+ */
+export function isTransientImportError(err: unknown): boolean {
+  const e = err as { code?: unknown; message?: unknown; cause?: unknown } | null;
+  const code = typeof e?.code === 'string' ? e.code : '';
+  const message = typeof e?.message === 'string' ? e.message : '';
+  if (['P2028', 'P1001', 'P1002', 'P1008', 'P1017', '40001', '40P01'].includes(code)) return true;
+  if (/expired transaction|Transaction already closed|Unable to start a transaction|Connection terminated|ECONNRESET|serializ|deadlock/i.test(message)) return true;
+  return e?.cause ? isTransientImportError(e.cause) : false;
+}
 export const importStorageKey = (workspaceId: string, importId: string) => `imports/${workspaceId}/${importId}.csv`;
 
 /** Job envelope (same shape as worker tenant jobs) — everything needed to run or resume without the request. */
@@ -33,6 +49,9 @@ export function jobContext(job: ImportJob): TenantRequestContext {
     meta: { requestId: job.correlationId, ipAddress: null, userAgent: null },
   };
 }
+
+/** The import fields a chunk needs. */
+type ImportRun = { id: string; orgId: string; workspaceId: string; mapping: Record<string, string>; options: ImportOptions; createdByUserId: string | null };
 
 type Issue = { rowNumber: number; column: string | null; code: string; message: string; severity: 'error' | 'warning' };
 
@@ -106,17 +125,18 @@ export class ImportProcessor {
           for (const row of chunk) for (const i of this.parse(row, imp.mapping, imp.options).identities) seen.add(`${i.kind}:${i.normalized}`);
           continue;
         }
-        const status = await inTenant(this.db, ctx, ({ tx }) => tx.contactImport.findUniqueOrThrow({ where: { id: importId }, select: { status: true } }));
-        if (status.status !== 'processing') return; // cancelled
-        issuesWritten += await inTenant(this.db, ctx, (uow) => this.applyChunk(uow, ctx, imp, chunk, seen, MAX_ISSUES_PER_PHASE - issuesWritten), {
-          source: 'import',
-        });
+        const outcome = await this.applyChunkWithRetry(ctx, imp, chunk, seen, MAX_ISSUES_PER_PHASE - issuesWritten);
+        if (outcome === 'stopped') return; // cancelled meanwhile
+        if (typeof outcome === 'number') issuesWritten += outcome;
       }
       await inTenant(
         this.db,
         ctx,
         async ({ tx, event, audit }) => {
-          const done = await tx.contactImport.update({ where: { id: importId }, data: { status: 'completed', completedAt: new Date(), updatedAt: new Date() } });
+          // Conditional: exactly one runner completes an import (and emits import.completed), even after a retry race.
+          const won = await tx.contactImport.updateMany({ where: { id: importId, status: 'processing' }, data: { status: 'completed', completedAt: new Date(), updatedAt: new Date() } });
+          if (won.count !== 1) return;
+          const done = await tx.contactImport.findUniqueOrThrow({ where: { id: importId } });
           const payload = { created: done.createdCount, updated: done.updatedCount, skipped: done.skippedCount, errors: done.errorCount, listIds: imp.options.listIds ?? [], tagIds: imp.options.tagIds ?? [] };
           await event('import.completed', importId, payload);
           await audit({ action: 'import.completed', targetType: 'import', targetId: importId, metadata: payload });
@@ -232,11 +252,54 @@ export class ImportProcessor {
     return { parsed, decisions, issues };
   }
 
+  /**
+   * Applies one chunk, retrying transient failures. Each attempt locks the import row and re-reads its status and
+   * checkpoint, so a cancelled import stops, and a chunk already committed (by an earlier attempt whose commit
+   * succeeded, or by a concurrent runner after a "stalled" retry) is skipped instead of applied twice.
+   * Returns the issues written, 'skipped' or 'stopped'.
+   */
+  private async applyChunkWithRetry(
+    ctx: TenantRequestContext,
+    imp: ImportRun,
+    chunk: { rowNumber: number; cells: string[] }[],
+    seen: Set<string>,
+    issueBudget: number,
+  ): Promise<number | 'skipped' | 'stopped'> {
+    const last = chunk.at(-1)!.rowNumber;
+    for (let attempt = 1; ; attempt++) {
+      const seenBefore = new Set(seen);
+      try {
+        return await inTenant(
+          this.db,
+          ctx,
+          async (uow) => {
+            const [row] = await uow.tx.$queryRaw<{ status: string; processed_rows: number }[]>`
+              SELECT status, processed_rows FROM contact_imports WHERE id = ${imp.id}::uuid FOR UPDATE`;
+            if (!row || row.status !== 'processing') return 'stopped' as const;
+            if (row.processed_rows >= last) {
+              for (const r of chunk) for (const i of this.parse(r, imp.mapping, imp.options).identities) seen.add(`${i.kind}:${i.normalized}`);
+              return 'skipped' as const;
+            }
+            return this.applyChunk(uow, ctx, imp, chunk, seen, issueBudget);
+          },
+          { source: 'import' },
+        );
+      } catch (err) {
+        // The failed attempt may have added this chunk's addresses to the in-file duplicate set: restore it.
+        seen.clear();
+        for (const k of seenBefore) seen.add(k);
+        if (attempt >= CHUNK_ATTEMPTS || !isTransientImportError(err)) throw err;
+        this.logger.warn(`import ${imp.id}: chunk ending at row ${last} failed transiently (attempt ${attempt}); retrying`);
+        await new Promise((res) => setTimeout(res, 500 * 2 ** attempt));
+      }
+    }
+  }
+
   /** Returns the number of issues written. */
   private async applyChunk(
     uow: TenantUnitOfWork,
     ctx: TenantRequestContext,
-    imp: { id: string; orgId: string; workspaceId: string; mapping: Record<string, string>; options: ImportOptions; createdByUserId: string | null },
+    imp: ImportRun,
     chunk: { rowNumber: number; cells: string[] }[],
     seen: Set<string>,
     issueBudget: number,
