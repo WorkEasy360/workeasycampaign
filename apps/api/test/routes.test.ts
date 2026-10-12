@@ -25,9 +25,19 @@ describe('route inventory', () => {
   it('every non-public route rejects anonymous callers with 401 (so every route has an access policy)', async () => {
     const anonymous = new Agent(t);
     await anonymous.get('/v1/auth/csrf');
-    for (const route of ROUTES.filter((r) => r.access !== 'public')) {
+    for (const route of ROUTES.filter((r) => r.access !== 'public' && r.access !== 'token')) {
       const res = await anonymous.request(route.method, toConcrete(route.path), route.method === 'GET' ? undefined : {});
       expect(res.status, `${route.method} ${route.path}`).toBe(401);
+    }
+  });
+
+  it('token routes need no session but refuse a forged token (404) — the signed token is their only authority', async () => {
+    const anonymous = new Agent(t);
+    const tokenRoutes = ROUTES.filter((r) => r.access === 'token');
+    expect(tokenRoutes.length).toBeGreaterThan(0);
+    for (const route of tokenRoutes) {
+      const res = await anonymous.request(route.method, route.path.replace('{token}', 'u1.forged.forged'), route.method === 'GET' ? undefined : {});
+      expect(res.status, `${route.method} ${route.path}`).toBe(404);
     }
   });
 

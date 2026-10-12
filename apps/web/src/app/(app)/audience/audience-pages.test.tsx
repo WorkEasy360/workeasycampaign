@@ -35,7 +35,7 @@ describe('custom fields page', () => {
     const dialog = await screen.findByRole('dialog');
     await userEvent.click(within(dialog).getByRole('button', { name: 'Create field' }));
     expect(calls.some((c) => c.method === 'POST')).toBe(false);
-    await userEvent.type(within(dialog).getByLabelText('Label'), 'Customer since');
+    await userEvent.type(within(dialog).getByLabelText('Label'), 'Customer since', { delay: null });
     expect(within(dialog).getByLabelText('Key')).toHaveValue('customer_since');
     await userEvent.selectOptions(within(dialog).getByLabelText('Type'), 'date');
     await userEvent.click(within(dialog).getByRole('button', { name: 'Create field' }));
@@ -69,7 +69,7 @@ describe('lists page', () => {
     const { unmount } = renderAudience(<ListsPage />, EDITOR);
     await userEvent.click(await screen.findByRole('button', { name: 'New list' }));
     const dialog = await screen.findByRole('dialog');
-    await userEvent.type(within(dialog).getByLabelText('Name'), 'Expo visitors');
+    await userEvent.type(within(dialog).getByLabelText('Name'), 'Expo visitors', { delay: null });
     await userEvent.click(within(dialog).getByRole('button', { name: 'Create list' }));
     await waitFor(() => expect(calls.find((c) => c.method === 'POST')?.body).toEqual({ name: 'Expo visitors', description: '' }));
     unmount();

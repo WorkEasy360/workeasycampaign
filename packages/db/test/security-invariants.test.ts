@@ -21,6 +21,20 @@ describe('database security invariants', () => {
     expect(rows.map((r) => r.relname)).toEqual([]);
   });
 
+  it('no application function is executable by PUBLIC (each grant is explicit, per role)', async () => {
+    const rows = await withOwnerConnection(async (c) =>
+      (
+        await c.query<{ fn: string }>(`
+          SELECT n.nspname || '.' || p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')' AS fn
+            FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+           WHERE n.nspname IN ('app', 'public', 'identity')
+             AND has_function_privilege('public', p.oid, 'EXECUTE')
+             AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e')`)
+      ).rows,
+    );
+    expect(rows.map((r) => r.fn)).toEqual([]);
+  });
+
   it('runtime roles are not superusers, cannot bypass RLS and cannot create roles or databases', async () => {
     const rows = await withOwnerConnection(async (c) =>
       (

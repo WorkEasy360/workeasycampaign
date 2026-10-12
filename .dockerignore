@@ -1,0 +1,15 @@
+# Never send secrets, local data, or build output into the image build context.
+.env
+.env.*
+!.env.example
+**/node_modules
+**/dist
+**/.next
+**/.turbo
+**/coverage
+**/test-results
+**/playwright-report
+apps/e2e/.mail
+.dev-mail
+.git
+*.log

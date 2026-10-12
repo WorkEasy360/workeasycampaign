@@ -3,12 +3,16 @@ import { Reflector } from '@nestjs/core';
 import type { FastifyRequest } from 'fastify';
 import { Redis } from 'ioredis';
 import { RATE_LIMIT_POLICY, type RateLimitPolicy } from './access.js';
+import type { AppConfig } from '../config/env.js';
+import { APP_CONFIG } from '../infrastructure/providers.js';
 import { Errors } from './errors.js';
 
 /** Fixed-window counter store. */
 export interface RateLimitStore {
   /** Increments the bucket and returns its count within the current window and seconds until it resets. */
   hit(key: string, windowSeconds: number): Promise<{ count: number; resetInSeconds: number }>;
+  /** Reachability check for readiness and metrics (shared stores only). */
+  ping?(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -55,8 +59,12 @@ export class RedisRateLimitStore implements RateLimitStore {
     return { count, resetInSeconds: ttl > 0 ? ttl : windowSeconds };
   }
 
+  async ping() {
+    await this.redis.ping();
+  }
+
   async close() {
-    await this.redis.quit();
+    await this.redis.quit().catch(() => this.redis.disconnect());
   }
 }
 
@@ -66,6 +74,7 @@ export class RateLimitGuard implements CanActivate {
   constructor(
     private readonly reflector: Reflector,
     @Inject(RATE_LIMIT_STORE) private readonly store: RateLimitStore,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -76,8 +85,18 @@ export class RateLimitGuard implements CanActivate {
     if (!policy) return true;
     const req = context.switchToHttp().getRequest<FastifyRequest>();
     const subject = policy.by === 'user' ? (req.principal?.userId ?? `ip:${req.ip}`) : `ip:${req.ip}`;
-    const { count, resetInSeconds } = await this.store.hit(`${policy.name}:${subject}`, policy.windowSeconds);
-    if (count > policy.limit) throw Errors.rateLimited(resetInSeconds);
+    // Fail CLOSED (a limit that cannot be counted is not skipped: login and other brute-force protections depend on
+    // it), but say so: 503 + Retry-After, not an internal error. Readiness reports the store too (load balancers).
+    let hit: { count: number; resetInSeconds: number };
+    try {
+      hit = await this.store.hit(`${policy.name}:${subject}`, policy.windowSeconds);
+    } catch {
+      throw Errors.serviceUnavailable('Temporarily unavailable. Try again in a moment.');
+    }
+    const { count, resetInSeconds } = hit;
+    // A per-deployment override (RATE_LIMIT_OVERRIDES) replaces the code default for that policy only.
+    const limit = this.config.rateLimitOverrides[policy.name] ?? policy.limit;
+    if (count > limit) throw Errors.rateLimited(resetInSeconds);
     return true;
   }
 }

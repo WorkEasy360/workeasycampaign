@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { CHANNELS, type Channel } from '../channels.js';
-import type { EligibilityRequest, EligibilityResponse, EligibilityResult, IneligibilityReason } from '../eligibility.js';
+import { type EligibilityRequest, type EligibilityResponse, type EligibilityResult, type IneligibilityReason, TOPIC_POLICIES } from '../eligibility.js';
 
 // ─── enums ──────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -258,6 +258,7 @@ export const eligibilityCheckRequest = z.object({
   channel: z.enum(CHANNELS),
   purpose: z.enum(['marketing', 'transactional']).default('marketing'),
   topicId: uuid.optional(),
+  topicPolicy: z.enum(TOPIC_POLICIES).optional(),
 });
 
 // ─── imports ────────────────────────────────────────────────────────────────────────────────────────────────

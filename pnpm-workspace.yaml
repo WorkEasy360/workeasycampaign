@@ -11,3 +11,18 @@ allowBuilds:
   prisma: false # preinstall only prints a Node version warning
 
 engineStrict: true
+
+# Security (Gate D, 2026-10-09): fastify < 5.12.5 has 7 advisories (incl. X-Forwarded-* spoofing under hop-count
+# trustProxy, auth/validation bypasses). @nestjs/platform-fastify 11.x pins 5.11.3 exactly; 5.12.5 is the same major
+# (semver-compatible). Remove once the Nest adapter depends on a fixed version.
+overrides:
+  fastify: 5.12.5
+# Security (2026-10-09, dev tooling only): the prisma CLI pulls lodash (via Prisma Studio; code injection / prototype
+# pollution) and mysql2 (unused here: PostgreSQL only) at vulnerable versions. Same majors, patched releases. Remove
+# once prisma depends on fixed versions. deepmerge-ts (< 8, stack exhaustion on recursive input; only our own
+# prisma.config.ts is merged) needs a major bump: 8.0.2, adopted 2026-10-10 after checking that @prisma/config only
+# calls deepmerge() (v8 breaks types, the merge-info callback and deepmergeInto, none used) and re-testing prisma
+# generate, migrate deploy/status and the database suites.
+  lodash: 4.18.1
+  mysql2: 3.23.1
+  deepmerge-ts: 8.0.2

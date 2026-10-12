@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import type { Database } from '@workeasy/db';
 import type { AuditLogView } from '@workeasy/shared';
-import { decodeCursor, pageOf } from '../../common/pagination.js';
+import { cursorScope, decodeCursor, pageOf } from '../../common/pagination.js';
 import type { TenantRequestContext } from '../../common/request-context.js';
 import { DATABASE } from '../../infrastructure/providers.js';
 import { inTenant } from '../tenancy/application/tenant-tx.js';
@@ -19,7 +19,8 @@ export class AuditQueryService {
   constructor(@Inject(DATABASE) private readonly db: Database) {}
 
   async list(ctx: TenantRequestContext, f: AuditFilter) {
-    const c = decodeCursor(f.cursor);
+    const scope = cursorScope(ctx.access, 'audit', { ...f });
+    const c = decodeCursor(f.cursor, scope);
     const rows = await inTenant(this.db, ctx, ({ tx }) =>
       tx.auditLog.findMany({
         where: {
@@ -33,7 +34,7 @@ export class AuditQueryService {
         take: f.limit + 1,
       }),
     );
-    const page = pageOf(rows, f.limit, (r) => ({ t: r.occurredAt.toISOString(), id: r.id }));
+    const page = pageOf(rows, f.limit, (r) => ({ t: r.occurredAt.toISOString(), id: r.id }), scope);
     return { data: page.data.map(toView), nextCursor: page.nextCursor };
   }
 

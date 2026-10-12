@@ -5,12 +5,13 @@
   "scripts": {
     "dev": "next dev --port 3000",
     "build": "next build",
-    "start": "next start --port 3000",
+    "start": "next start --port 3000 --keepAliveTimeout 65000",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.104.0",
+    "@workeasy/content": "workspace:*",
     "@workeasy/shared": "workspace:*",
     "clsx": "^2.1.1",
     "lucide-react": "^1.49.0",

@@ -1,0 +1,6 @@
+{
+  "extends": "@workeasy/config/tsconfig.base.json",
+  "//": "Audience-owned adapters for the audience-core ports (docs/contracts/phase-5-audience.md §9.8). No apps, NestJS or channels.",
+  "compilerOptions": { "outDir": "dist", "rootDir": "src" },
+  "include": ["src"]
+}

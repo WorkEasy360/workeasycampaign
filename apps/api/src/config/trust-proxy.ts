@@ -5,11 +5,12 @@ import { isIP } from 'node:net';
  * Client IPs feed rate limiting, login throttling and audit logs, so trusting everyone (`true`) would let any
  * client choose its own IP. Accepted values:
  *   false                     – no proxy; the socket address is the client (default when nothing is in front)
- *   <n>                       – exactly n proxy hops in front of the API (e.g. 1 for a single load balancer)
  *   <list>                    – comma-separated IPs/CIDRs and/or the keywords loopback, linklocal, uniquelocal
- * `true` is rejected outright.
+ * `true` is rejected outright. A HOP COUNT is rejected too (Gate D, 2026-10-09): it cannot check that the immediate
+ * peer IS a proxy, so a client connecting directly could forge X-Forwarded-For (advisory GHSA for fastify < 5.12.1;
+ * fastify 5.12 dropped hop counts for that reason). Name the proxies by address instead.
  */
-export type TrustProxySetting = false | number | string[];
+export type TrustProxySetting = false | string[];
 
 const KEYWORDS = new Set(['loopback', 'linklocal', 'uniquelocal']);
 
@@ -17,12 +18,10 @@ export function parseTrustProxy(raw: string): TrustProxySetting {
   const value = raw.trim();
   if (value === '' || value === 'false') return false;
   if (value === 'true') {
-    throw new Error('TRUST_PROXY=true would trust X-Forwarded-For from anyone; set a hop count or proxy addresses');
+    throw new Error('TRUST_PROXY=true would trust X-Forwarded-For from anyone; set the proxy addresses or CIDRs');
   }
   if (/^\d+$/.test(value)) {
-    const n = Number(value);
-    if (n < 1 || n > 10) throw new Error('TRUST_PROXY hop count must be between 1 and 10');
-    return n;
+    throw new Error('TRUST_PROXY hop counts are not accepted (a direct client could forge X-Forwarded-For): list the proxy addresses or CIDRs, e.g. 10.0.0.0/8');
   }
   const entries = value.split(',').map((s) => s.trim()).filter(Boolean);
   for (const entry of entries) {

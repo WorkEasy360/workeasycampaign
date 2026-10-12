@@ -1,4 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { ADDRESS_KIND_FOR_CHANNEL, effectiveChannelState, type StoredChannelState } from '@workeasy/audience-core';
 import { type Database, isUniqueViolation, type Tx } from '@workeasy/db';
 import type {
   ContactDetail,
@@ -12,13 +13,12 @@ import type {
   TimelineEntry,
 } from '@workeasy/shared';
 import { AppError, Errors } from '../../../common/errors.js';
-import { decodeCursor, encodeCursor } from '../../../common/pagination.js';
+import { cursorScope, decodeCursor, encodeCursor } from '../../../common/pagination.js';
 import type { TenantRequestContext } from '../../../common/request-context.js';
 import type { AppConfig } from '../../../config/env.js';
 import { APP_CONFIG, DATABASE } from '../../../infrastructure/providers.js';
 import { inTenant } from '../../tenancy/application/tenant-tx.js';
-import { canChangeSubscription, effectiveChannelState, type StoredChannelState } from '../domain/consent.js';
-import { ADDRESS_KIND_FOR_CHANNEL } from '../domain/eligibility.js';
+import { canChangeSubscription } from '../domain/consent.js';
 import { buildSearchText, displayName, normalizeIdentity } from '../domain/normalization.js';
 import {
   activeSuppressionsFor,
@@ -56,7 +56,8 @@ export class ContactsService {
   async list(ctx: TenantRequestContext, q: ContactListQuery): Promise<ContactPage> {
     return inTenant(this.db, ctx, async ({ tx }) => {
       const { where, searchTruncated } = await this.resolveFilter(tx, q);
-      const c = decodeCursor(q.cursor);
+      const scope = cursorScope(ctx.access, 'contacts', { ...q });
+      const c = decodeCursor(q.cursor, scope);
       const field = q.sort === 'updated' ? 'updatedAt' : 'createdAt';
       const cmp = q.order === 'desc' ? 'lt' : 'gt';
       const rows = await tx.contact.findMany({
@@ -72,7 +73,7 @@ export class ContactsService {
       const last = page.at(-1);
       return {
         data: page.map((r) => this.summary(r, r.identities, (suppressed.get(r.id) ?? []).length > 0)),
-        nextCursor: rows.length > q.limit && last ? encodeCursor({ t: last[field].toISOString(), id: last.id }) : null,
+        nextCursor: rows.length > q.limit && last ? encodeCursor({ t: last[field].toISOString(), id: last.id }, scope) : null,
         searchTruncated,
       };
     });
@@ -246,13 +247,13 @@ export class ContactsService {
         await lockFieldKeys(tx, defs, cf.usedKeys);
         if (input.listIds.length) {
           await tx.listMembership.createMany({
-            data: input.listIds.map((listId) => ({ orgId: ctx.access.orgId, workspaceId: ctx.access.workspaceId!, listId, contactId: contact.id, addedByUserId: ctx.principal.userId })),
+            data: [...input.listIds].sort().map((listId) => ({ orgId: ctx.access.orgId, workspaceId: ctx.access.workspaceId!, listId, contactId: contact.id, addedByUserId: ctx.principal.userId })),
           });
           await events('list.member_added', input.listIds.map((listId) => ({ aggregateId: contact.id, payload: { listId, source: 'manual' } })));
         }
         if (input.tagIds.length) {
           await tx.contactTag.createMany({
-            data: input.tagIds.map((tagId) => ({ orgId: ctx.access.orgId, workspaceId: ctx.access.workspaceId!, tagId, contactId: contact.id, taggedByUserId: ctx.principal.userId })),
+            data: [...input.tagIds].sort().map((tagId) => ({ orgId: ctx.access.orgId, workspaceId: ctx.access.workspaceId!, tagId, contactId: contact.id, taggedByUserId: ctx.principal.userId })),
           });
           await events('contact.tagged', input.tagIds.map((tagId) => ({ aggregateId: contact.id, payload: { tagId } })));
         }
@@ -459,7 +460,8 @@ export class ContactsService {
   async timeline(ctx: TenantRequestContext, contactId: string, limit: number, cursor?: string) {
     return inTenant(this.db, ctx, async ({ tx }) => {
       await requireLiveContact(tx, contactId, { allowDeleted: true });
-      const c = decodeCursor(cursor);
+      const scope = cursorScope(ctx.access, 'contact.timeline', { contactId });
+      const c = decodeCursor(cursor, scope);
       const rows = await tx.domainEvent.findMany({
         where: {
           aggregateType: 'contact',
@@ -482,7 +484,7 @@ export class ContactsService {
             data: e.payload as Record<string, unknown>,
           }),
         ),
-        nextCursor: rows.length > limit && last ? encodeCursor({ t: last.recordedAt.toISOString(), id: last.id }) : null,
+        nextCursor: rows.length > limit && last ? encodeCursor({ t: last.recordedAt.toISOString(), id: last.id }, scope) : null,
       };
     });
   }

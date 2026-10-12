@@ -1,28 +1,18 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { consentFingerprint, DEFAULT_PENDING_EXPIRY_DAYS, effectiveChannelState, type StoredChannelState } from '@workeasy/audience-core';
 import type { Database, Tx } from '@workeasy/db';
 import type { Channel, ConsentEventView, RecordConsentRequest, RetentionPolicyView } from '@workeasy/shared';
 import { AppError, Errors } from '../../../common/errors.js';
-import { decodeCursor, encodeCursor } from '../../../common/pagination.js';
+import { cursorScope, decodeCursor, encodeCursor } from '../../../common/pagination.js';
 import type { TenantRequestContext } from '../../../common/request-context.js';
 import type { AppConfig } from '../../../config/env.js';
 import { APP_CONFIG, DATABASE } from '../../../infrastructure/providers.js';
-import { hmac } from '../../../infrastructure/tokens.js';
 import { inTenant, type TenantUnitOfWork } from '../../tenancy/application/tenant-tx.js';
-import {
-  type ActorType,
-  type ChannelState,
-  changedByOf,
-  effectiveChannelState,
-  evidenceProblems,
-  nextChannelState,
-  nextTopicState,
-  type StoredChannelState,
-  type TopicState,
-} from '../domain/consent.js';
+import { type ActorType, changedByOf, evidenceProblems, nextChannelState, nextTopicState, type TopicState } from '../domain/consent.js';
 import { CHANNEL_IDENTITY_KIND, requireLiveContact } from './audience-support.js';
 
 /** Defaults when a workspace has no explicit policy (docs/consent.md §Retention). Proposed, configurable. */
-export const DEFAULT_RETENTION = { retainAfterWithdrawalDays: 2190, retainAfterErasureDays: 2190, pendingExpiryDays: 7 } as const;
+export const DEFAULT_RETENTION = { retainAfterWithdrawalDays: 2190, retainAfterErasureDays: 2190, pendingExpiryDays: DEFAULT_PENDING_EXPIRY_DAYS } as const;
 
 export interface ConsentInput {
   channel: Channel;
@@ -160,46 +150,13 @@ export async function recordTopicPreference(
 
 /** Keyed hash of a channel address: identifies the subject of evidence without storing the address itself. */
 export function fingerprint(secret: string, channel: string, valueNormalized: string): string {
-  return hmac(secret, 'consent-subject', channel, valueNormalized);
+  return consentFingerprint(secret, channel, valueNormalized);
 }
 
 /** The workspace's pending-consent expiry (policy, or the documented default). */
 export async function pendingExpiryDays(tx: Tx, workspaceId: string): Promise<number> {
   const p = await tx.consentRetentionPolicy.findUnique({ where: { workspaceId }, select: { pendingExpiryDays: true } });
   return p?.pendingExpiryDays ?? DEFAULT_RETENTION.pendingExpiryDays;
-}
-
-/**
- * Effective consent per contact for one channel, as eligibility and the contact page must see it: pending past its
- * expiry is `expired`, and `forCurrentAddress` says whether the state was recorded for the contact's current primary
- * address of the channel (docs/consent.md §Address binding). Loads everything in a fixed number of queries.
- */
-export async function effectiveConsent(
-  tx: Tx,
-  secret: string,
-  workspaceId: string,
-  channel: Channel,
-  contactIds: string[],
-  primaryByContact: Map<string, string>,
-): Promise<Map<string, { state: ChannelState; forCurrentAddress: boolean; changedBy: string; lawfulBasis: string | null; changedAt: Date }>> {
-  const out = new Map<string, { state: ChannelState; forCurrentAddress: boolean; changedBy: string; lawfulBasis: string | null; changedAt: Date }>();
-  if (!contactIds.length) return out;
-  const states = await tx.consentState.findMany({ where: { contactId: { in: contactIds }, channel } });
-  if (!states.length) return out;
-  const days = await pendingExpiryDays(tx, workspaceId);
-  const now = new Date();
-  for (const s of states) {
-    const primary = primaryByContact.get(s.contactId);
-    out.set(s.contactId, {
-      state: effectiveChannelState(s.state as StoredChannelState, s.recordedAt, days, now),
-      // No primary address → nothing to compare (NO_ADDRESS reports that); otherwise the fingerprints must match.
-      forCurrentAddress: primary === undefined || (s.subjectFingerprint !== null && s.subjectFingerprint === fingerprint(secret, channel, primary)),
-      changedBy: s.changedBy,
-      lawfulBasis: s.lawfulBasis,
-      changedAt: s.changedAt,
-    });
-  }
-  return out;
 }
 
 @Injectable()
@@ -254,7 +211,8 @@ export class ConsentService {
   async history(ctx: TenantRequestContext, contactId: string, limit: number, cursor?: string) {
     return inTenant(this.db, ctx, async ({ tx }) => {
       await requireLiveContact(tx, contactId, { allowDeleted: true });
-      const c = decodeCursor(cursor);
+      const scope = cursorScope(ctx.access, 'consent.history', { contactId });
+      const c = decodeCursor(cursor, scope);
       const rows = await tx.consentEvent.findMany({
         where: { contactId, ...(c ? { OR: [{ occurredAt: { lt: new Date(c.t) } }, { occurredAt: new Date(c.t), id: { lt: c.id } }] } : {}) },
         orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
@@ -283,7 +241,7 @@ export class ConsentService {
             evidence: e.evidence as Record<string, unknown>,
           }),
         ),
-        nextCursor: rows.length > limit && last ? encodeCursor({ t: last.occurredAt.toISOString(), id: last.id }) : null,
+        nextCursor: rows.length > limit && last ? encodeCursor({ t: last.occurredAt.toISOString(), id: last.id }, scope) : null,
       };
     });
   }

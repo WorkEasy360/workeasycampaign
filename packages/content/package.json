@@ -1,0 +1,27 @@
+{
+  "name": "@workeasy/content",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@workeasy/shared": "workspace:*",
+    "parse5": "8.0.1"
+  },
+  "devDependencies": {
+    "@workeasy/config": "workspace:*"
+  }
+}

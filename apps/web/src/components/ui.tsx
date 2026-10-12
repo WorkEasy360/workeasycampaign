@@ -64,6 +64,8 @@ const control =
   'w-full rounded-control border border-line bg-surface px-3 text-sm text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25 disabled:bg-surface-muted aria-invalid:border-danger';
 
 interface FieldProps {
+  /** Optional fixed id for the control (e.g. so a link can target it); otherwise generated. */
+  id?: string;
   label: string;
   hint?: ReactNode;
   errors?: string[];
@@ -71,8 +73,9 @@ interface FieldProps {
 }
 
 /** Label + control + hint + errors, wired for screen readers (aria-describedby / aria-invalid). */
-export function Field({ label, hint, errors, children }: FieldProps) {
-  const id = useId();
+export function Field({ id: fixedId, label, hint, errors, children }: FieldProps) {
+  const autoId = useId();
+  const id = fixedId ?? autoId;
   const hintId = hint ? `${id}-hint` : undefined;
   const errId = errors?.length ? `${id}-err` : undefined;
   return (
@@ -171,13 +174,19 @@ export function Avatar({ name, size = 'md' }: { name: string; size?: 'sm' | 'md'
 
 // ─── Layout ─────────────────────────────────────────────────────────────────────────────────────────────────
 
-export function Card({ title, description, actions, children, className }: { title?: string; description?: ReactNode; actions?: ReactNode; children?: ReactNode; className?: string }) {
+export function Card({ id, title, description, actions, children, className }: { id?: string; title?: string; description?: ReactNode; actions?: ReactNode; children?: ReactNode; className?: string }) {
+  // A titled card is a named region (landmark navigation; tests can scope to it).
+  const titleId = useId();
   return (
-    <section className={cx('rounded-card border border-line bg-surface', className)}>
+    <section id={id} tabIndex={id ? -1 : undefined} aria-labelledby={title ? titleId : undefined} className={cx('rounded-card border border-line bg-surface', className)}>
       {(title || actions) && (
         <header className="flex flex-wrap items-start justify-between gap-3 border-b border-line px-5 py-4">
           <div>
-            {title && <h2 className="text-base font-semibold text-ink">{title}</h2>}
+            {title && (
+              <h2 id={titleId} className="text-base font-semibold text-ink">
+                {title}
+              </h2>
+            )}
             {description && <p className="mt-0.5 text-sm text-ink-muted">{description}</p>}
           </div>
           {actions}
@@ -240,7 +249,10 @@ export function Dialog({ open, onClose, title, description, children, footer }: 
   useEffect(() => {
     const d = ref.current;
     if (!d) return;
-    if (open && !d.open) d.showModal?.();
+    if (open && !d.open) {
+      d.showModal?.();
+      d.querySelector<HTMLElement>('[data-autofocus]')?.focus();
+    }
     if (!open && d.open) d.close?.();
   }, [open]);
   return (

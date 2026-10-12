@@ -1,0 +1,7 @@
+{
+  "extends": "@workeasy/config/tsconfig.base.json",
+  "//": "Email rendering (docs/contracts/phase-6-content-amendment.md §4). Pure and browser-safe: no I/O, no Node or DOM globals — the web preview and the API run the same code.",
+  "compilerOptions": { "outDir": "dist", "rootDir": "src", "types": [], "lib": ["ES2022"] },
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts"]
+}

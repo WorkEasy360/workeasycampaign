@@ -5,14 +5,25 @@
  */
 import { readFileSync } from 'node:fs';
 
+const SERVER_DRIVERS = ['@prisma/client', '@prisma/adapter-pg', 'prisma', 'pg', 'ioredis', 'redis', 'bullmq', 'argon2', 'nodemailer'];
+const FRAMEWORKS = ['@nestjs/common', '@nestjs/core', '@nestjs/config', '@nestjs/platform-fastify', 'fastify'];
+const AUDIENCE_READ = ['@workeasy/audience-core', '@workeasy/audience-infra'];
+
 const FORBIDDEN = {
   'apps/web': [
-    '@workeasy/db', '@workeasy/channels', '@workeasy/api', '@workeasy/worker',
-    '@prisma/client', '@prisma/adapter-pg', 'prisma', 'pg', 'ioredis', 'redis', 'bullmq', 'argon2', 'nodemailer',
+    '@workeasy/db', '@workeasy/channels', '@workeasy/api', '@workeasy/worker', ...AUDIENCE_READ,
+    ...SERVER_DRIVERS,
   ],
   'packages/shared': [
-    '@workeasy/db', '@workeasy/channels', '@prisma/client', 'pg', 'ioredis', 'bullmq', 'argon2', 'nodemailer',
+    '@workeasy/db', '@workeasy/channels', ...AUDIENCE_READ, '@prisma/client', 'pg', 'ioredis', 'bullmq', 'argon2', 'nodemailer',
   ],
+  // Audience read side (docs/contracts/phase-5-audience.md §9.8): core is pure; infra reaches the database only via @workeasy/db.
+  'packages/audience-core': ['@workeasy/db', '@workeasy/channels', '@workeasy/audience-infra', ...SERVER_DRIVERS, ...FRAMEWORKS],
+  'packages/audience-infra': ['@workeasy/channels', '@workeasy/api', '@workeasy/worker', ...SERVER_DRIVERS, ...FRAMEWORKS],
+  // Email rendering (docs/contracts/phase-6-content-amendment.md §4): pure and browser-shipped (web preview).
+  'packages/content': ['@workeasy/db', '@workeasy/channels', '@workeasy/api', '@workeasy/worker', ...AUDIENCE_READ, ...SERVER_DRIVERS, ...FRAMEWORKS],
+  'packages/db': AUDIENCE_READ,
+  'packages/channels': AUDIENCE_READ,
 };
 
 let failed = false;

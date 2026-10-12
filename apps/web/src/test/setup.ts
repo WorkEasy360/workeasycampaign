@@ -19,3 +19,8 @@ if (typeof HTMLDialogElement !== 'undefined' && !HTMLDialogElement.prototype.sho
     this.removeAttribute('open');
   };
 }
+
+// jsdom does not implement scrolling; focus moves (what the tests check) still happen.
+if (typeof Element !== 'undefined' && !Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = function scrollIntoView() {};
+}

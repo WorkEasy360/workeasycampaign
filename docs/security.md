@@ -13,6 +13,7 @@ granted by **migrations**, so a hosted database gets exactly the same grants.
 | `workeasy_app` | yes | NOSUPERUSER NOBYPASSRLS; statement_timeout 15 s; idle_in_transaction 30 s | API and worker runtime |
 | `workeasy_identity` | yes | NOSUPERUSER NOBYPASSRLS | Local identity provider (schema `identity` only) |
 | `workeasy_reporting` | yes | NOSUPERUSER NOBYPASSRLS | Read-only reporting, still tenant-scoped by RLS |
+| `workeasy_audience_count` | **no** | NOSUPERUSER NOBYPASSRLS NOINHERIT NOCREATEROLE NOCREATEDB | Owns the `SECURITY DEFINER` functions and triggers that maintain the Audience count bitmap; reachable only through them, confined by RLS to the session's workspace. `workeasy_owner` is a member (to hand it ownership in migrations). |
 
 ### `workeasy_app` grants
 
@@ -47,6 +48,8 @@ granted by **migrations**, so a hosted database gets exactly the same grants.
 | suppressions | ✓ | ✓ | **lift columns only** (active_key, lifted_at, lifted_by_user_id, lift_reason) | — |
 | contact_imports | ✓ | ✓ | status, progress, counts, mapping/options, dry-run summary, timestamps, version | — |
 | contact_import_issues | ✓ | ✓ | — | ✓ (discarded dry-run issues) |
+| audience_count_state / audience_count_source_chunks / audience_count_dead_chunks | ✓ | — | — | — (written only by the maintenance functions and triggers) |
+| audience_count_contact_seq | — | — | — | — |
 | `_prisma_migrations` | — | — | — | — |
 
 ### Other roles
@@ -57,6 +60,7 @@ granted by **migrations**, so a hosted database gets exactly the same grants.
   - `identity.login_attempts`: SELECT, INSERT (append-only).
   - **No** access to `public`.
 - **`workeasy_reporting`:** SELECT on organizations, workspaces, audit_logs and domain_events. RLS applies.
+- **`workeasy_audience_count`:** SELECT on contacts, list_memberships, contact_tags; SELECT/INSERT on audience_count_contact_seq; SELECT/INSERT/UPDATE/DELETE on the two chunk tables; SELECT/INSERT/UPDATE on audience_count_state. RLS applies. A superuser-installed DDL event trigger (`pnpm db:bootstrap`) invalidates every count bitmap on DDL that touches its tables, triggers or functions (contract `docs/contracts/phase-5-audience.md` §9.6, "Count bitmap").
 
 ### Defences on top of grants
 
@@ -90,8 +94,8 @@ All of this is verified by `packages/db/test/security-invariants.test.ts`, which
 | Tenant isolation | `docs/tenancy.md` (service layer + RLS) |
 | Frontend authority | None. `packages/shared` holds only contracts (catalogue, enums, Zod DTOs). Role policy, transitions and approval rules live in `apps/api/src/modules/*/domain`. The UI receives effective permissions as hints. |
 | Config | Zod-validated. `NODE_ENV` defaults to production. Production requires APP_URL (https), SESSION_SECRET and DATA_FINGERPRINT_SECRET (≥ 32 characters, not the dev values), FILE_STORE_DIR, TRUST_PROXY, REDIS_URL, SMTP mail and MAIL_FROM. Development defaults are isolated in one block and never read in production. |
-| Trusted proxies | `TRUST_PROXY`: `false`, a hop count, or an IP/CIDR/keyword list. `true` is rejected. Development default: `loopback` (only the local Next.js server). Client IP feeds rate limits, login throttling, audit logs and security events (tested both ways). |
-| Rate limiting | Per-route policies keyed by trusted IP or user. Redis store in production (required), in-memory in development/test. |
+| Trusted proxies | `TRUST_PROXY`: `false`, or an IP/CIDR/keyword list. `true` and hop counts are rejected (a hop count cannot verify the immediate peer, so a direct client could forge `X-Forwarded-For`; fastify ≥ 5.12 dropped them too, Gate D 2026-10-09). Development default: `loopback` (only the local Next.js server). Client IP feeds rate limits, login throttling, audit logs and security events (tested both ways). |
+| Rate limiting | Per-route policies keyed by trusted IP or user. Redis store in production (required), in-memory in development/test. Every policy answers `429` with `Retry-After`. **Per-deployment overrides** (2026-10-08): `RATE_LIMIT_OVERRIDES="policy=limit,…"` changes the limit of the named policies only. Values are 1–100,000, and an invalid entry fails boot. Use it e.g. for an office behind one NAT; the E2E suite sets `auth.register=40` because all its users register from 127.0.0.1. Tested: `rate-limit-overrides.test.ts`. |
 | CSRF | `docs/identity.md` §CSRF |
 | Sessions and passwords | `docs/identity.md` |
 | Idempotency | `Idempotency-Key` on organization, workspace and invitation creation, and (Phase 5) contact creation, bulk actions and import start. Claimed before work runs, replayed for 24 h, mismatched body gives 422. |
@@ -107,7 +111,15 @@ All of this is verified by `packages/db/test/security-invariants.test.ts`, which
 | Replay | `Idempotency-Key` on contact creation, bulk actions and import start: replay returns the first response; a different body with the same key is 422 (tested). |
 | Export safety | Audit CSV export is permission-gated (`audit.export`), rate-limited and audited. Cells starting with `= + - @` are neutralized (formula injection, tested). |
 | Email content | Templates escape every interpolated value |
-| SQL injection | Prisma parameterization; tagged-template raw SQL only; context ids validated as UUIDs |
+| SQL injection | Prisma parameterization; tagged-template raw SQL only; context ids validated as UUIDs. The analytics queries interpolate one module constant (`$queryRawUnsafe`); every value is a bound parameter |
+| Public token routes (Phase 7) | Unsubscribe (`/v1/unsubscribe/{token}`), provider webhooks (`/v1/webhooks/{provider}`) and `/metrics` use the `token` access policy: no session and no CSRF; the token or signature is the only authority. A forged token is a plain 404 and a wrong signature 401, with nothing written. All are rate-limited per IP |
+| Unsubscribe tokens | Compact MAC'd ids (organization, workspace, recipient); non-expiring. Keyed by `UNSUBSCRIBE_SECRET`, separate from sessions, with previous keys for rotation. The tenant comes from the verified token, then RLS |
+| Provider webhooks | HMAC over the raw body bytes (constant time, 15-minute window). The signature token is single-use per body: a replay with another body is refused. The tenant comes only from `provider_message_routes`. Events are deduplicated by provider event id. Ids and reason codes only are stored (no address, URL, IP or user agent) |
+| Email headers | Provider adapters drop header names or values with CR/LF (header injection, tested) |
+| HTML content | `html` blocks are rebuilt through a parse5 allowlist; anything that would be removed is refused (`HTML_UNSUPPORTED`). 40-vector XSS corpus tested. Previews render in `sandbox=""` iframes |
+| Sending rate and abuse | Provider, workspace and per-run token buckets in PostgreSQL, shared by all workers (Phase 7.11) |
+| Metrics | `/metrics` needs a bearer token (constant-time compare). Label values come from fixed vocabularies: no ids, no personal data (tested) |
+| Rate-limit store outage | Fail closed: rate-limited routes answer 503 + Retry-After while Redis is unreachable. Readiness reports it (tested) |
 
 ## Audit coverage (Phase 4)
 
@@ -149,11 +161,12 @@ Each record holds the actor, a snapshot of the actor's email, the IP (trusted), 
 | MFA (TOTP/WebAuthn), SSO | Contracts ready; implement before enterprise launch |
 | CSP still allows inline scripts (Next.js requirement) | Nonce-based CSP in Phase 17 |
 | Prisma 7.10 issues parallel queries inside one transaction (pg prints a deprecation warning) | Upstream issue; blocks moving to pg 9; `pg` pinned to 8.23.1 |
-| Encryption of provider credentials (envelope, per-organization key) | With the first stored credential (Phase 12/15) |
+| Encryption of provider credentials (envelope, per-organization key) | With the first STORED credential. Today the provider key is deployment configuration (secrets manager), never in the database |
 | Uploaded CSVs are not malware-scanned (they are parsed as text, never executed or served back) | Add scanning with object storage (Phase 8) |
-| Domain-level suppression | Not implemented (Zoho behaviour `[NOT_VERIFIED]`) |
+| Domain-level and organization-wide suppression | FUTURE PRODUCT FEATURE: needs a product decision and an Audience eligibility contract amendment. Workspace suppression by contact or address, hard bounce, complaint, unsubscribe and manual suppression are implemented |
 | Idempotency records keep the stored response (for `POST /contacts`, the contact's email) for 24 h, and erasure does not remove them | Accepted: user-scoped, RLS-protected, expires in 24 h (hardening L-6) |
 | Import files on local disk; multiple API instances need a shared `FILE_STORE_DIR` | Object-store `FileStore` (Phase 8) |
 | Address suppressions keep the normalized address after the contact is erased | By design: the do-not-contact request must keep working |
-| SSRF-safe fetcher, upload scanning, sandboxed HTML preview | With the features that need them (Phases 7, 8, 15) |
+| SSRF-safe fetcher, upload scanning | With the features that need them (Phases 8, 15). The sandboxed HTML preview exists since the content amendment (2026-10-08): an iframe with `sandbox=""` and renderer output only |
+| Pagination cursors | Signed (HMAC, key derived from SESSION_SECRET) and scoped to tenant, list and filters since 6.13. Rotating SESSION_SECRET invalidates outstanding cursors (clients restart from the first page) |
 | Production migration role is a superuser in the local Docker image | Production uses `workeasy_owner` (non-superuser) via the bootstrap; documented in deployment (Phase 19) |

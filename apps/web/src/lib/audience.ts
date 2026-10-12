@@ -48,12 +48,12 @@ export function useTopics() {
   return useQuery({ queryKey: audienceKeys.topics(workspaceId!), queryFn: () => http.get<{ data: TopicView[] }>(path('/topics')), enabled: !!workspaceId });
 }
 
-export function useCustomFields() {
+export function useCustomFields(enabled = true) {
   const { workspaceId, path } = useWorkspaceApi();
   return useQuery({
     queryKey: audienceKeys.fields(workspaceId!),
     queryFn: () => http.get<{ data: CustomFieldView[] }>(path('/custom-fields')),
-    enabled: !!workspaceId,
+    enabled: !!workspaceId && enabled,
   });
 }
 

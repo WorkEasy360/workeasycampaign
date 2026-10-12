@@ -66,7 +66,7 @@ describe('contact detail', () => {
     await screen.findByText('Not eligible');
     await userEvent.click(screen.getAllByRole('button', { name: 'Record change' })[0]!);
     const dialog = await screen.findByRole('dialog', { name: /record email consent/i });
-    await userEvent.type(within(dialog).getByLabelText('Evidence'), 'Signed sheet at expo');
+    await userEvent.type(within(dialog).getByLabelText('Evidence'), 'Signed sheet at expo', { delay: null });
     await userEvent.click(within(dialog).getByRole('button', { name: 'Record' }));
     await waitFor(() => expect(calls.find((c) => c.method === 'POST' && c.url.endsWith('/contacts/c1/consent'))).toBeTruthy());
     expect(calls.find((c) => c.url.endsWith('/contacts/c1/consent') && c.method === 'POST')!.body).toEqual({
@@ -85,7 +85,7 @@ describe('contact detail', () => {
     const dialog = await screen.findByRole('dialog', { name: /permanently erase/i });
     const confirm = within(dialog).getByRole('button', { name: 'Erase permanently' });
     expect(confirm).toBeDisabled();
-    await userEvent.type(within(dialog).getByLabelText(/type "ERASE"/i), 'ERASE');
+    await userEvent.type(within(dialog).getByLabelText(/type "ERASE"/i), 'ERASE', { delay: null });
     await userEvent.click(confirm);
     await waitFor(() => expect(replace).toHaveBeenCalledWith('/contacts'));
     expect(calls.find((c) => c.url.endsWith('/erase'))!.body).toEqual({ confirm: 'ERASE' });
@@ -109,7 +109,7 @@ describe('contact detail', () => {
     renderAudience(<ContactDetailPage />, EDITOR);
     const first = await screen.findByLabelText('First name');
     await userEvent.clear(first);
-    await userEvent.type(first, 'Asha R');
+    await userEvent.type(first, 'Asha R', { delay: null });
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(await screen.findByText(/someone else changed this contact/i)).toBeInTheDocument();
     expect(calls.find((c) => c.method === 'PATCH')!.body).toMatchObject({ firstName: 'Asha R', version: 3 });

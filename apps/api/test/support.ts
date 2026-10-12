@@ -1,11 +1,31 @@
 import { tmpdir } from 'node:os';
+import type { ChannelAdapter } from '@workeasy/channels';
+import type { DnsResolver } from '../src/modules/campaigns/domain/deliverability.js';
 import { join } from 'node:path';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { resetTestDatabase, testDatabaseUrls, withOwnerConnection } from '@workeasy/db/testing';
 import { createApp } from '../src/app.factory.js';
 import { loadConfig } from '../src/config/env.js';
 import type { MailMessage, Mailer } from '../src/infrastructure/mail/mailer.js';
-import { MemoryRateLimitStore } from '../src/common/rate-limit.js';
+import { MemoryRateLimitStore, type RateLimitStore } from '../src/common/rate-limit.js';
+import type { JobDispatcher } from '../src/common/jobs.js';
+
+/** Records dispatched jobs instead of running them (command-layer tests). */
+export class RecordingJobDispatcher implements JobDispatcher {
+  readonly jobs: { name: string; data: unknown }[] = [];
+  /** Registered handler names (never run: this double only records what is dispatched). */
+  readonly registered = new Set<string>();
+  register(name: string): void {
+    this.registered.add(name);
+  }
+  dispatch(name: string, data: unknown): void {
+    this.jobs.push({ name, data });
+  }
+  /** Jobs of one name for one execution id. */
+  for(name: string, executionId: string) {
+    return this.jobs.filter((j) => j.name === name && (j.data as { payload?: { executionId?: string } }).payload?.executionId === executionId);
+  }
+}
 
 export class CapturingMailer implements Mailer {
   readonly sent: MailMessage[] = [];
@@ -31,7 +51,11 @@ export interface TestApp {
 
 export const APP_ORIGIN = 'http://localhost:3000';
 
-export async function startTestApp(env: Record<string, string> = {}): Promise<TestApp> {
+/**
+ * Test app. `jobDispatcher` replaces the in-process job runner (e.g. a RecordingJobDispatcher to test commands without
+ * running the background work they dispatch).
+ */
+export async function startTestApp(env: Record<string, string> = {}, opts: { jobDispatcher?: JobDispatcher; dnsResolver?: DnsResolver; deliveryAdapter?: ChannelAdapter & { provider?: string }; smsAdapter?: ChannelAdapter & { provider?: string }; whatsappAdapter?: ChannelAdapter & { provider?: string }; rateLimitStore?: RateLimitStore } = {}): Promise<TestApp> {
   const urls = testDatabaseUrls();
   const config = loadConfig({
     NODE_ENV: 'test',
@@ -45,7 +69,7 @@ export async function startTestApp(env: Record<string, string> = {}): Promise<Te
     ...env,
   });
   const mailer = new CapturingMailer();
-  const app = await createApp(config, { mailer, rateLimitStore: new MemoryRateLimitStore() });
+  const app = await createApp(config, { mailer, rateLimitStore: opts.rateLimitStore ?? new MemoryRateLimitStore(), ...(opts.jobDispatcher ? { jobDispatcher: opts.jobDispatcher } : {}), ...(opts.dnsResolver ? { dnsResolver: opts.dnsResolver } : {}), ...(opts.deliveryAdapter ? { deliveryAdapter: opts.deliveryAdapter } : {}), ...(opts.smsAdapter ? { smsAdapter: opts.smsAdapter } : {}), ...(opts.whatsappAdapter ? { whatsappAdapter: opts.whatsappAdapter } : {}) });
   await app.init();
   await app.getHttpAdapter().getInstance().ready();
   return { app, mailer, close: () => app.close() };

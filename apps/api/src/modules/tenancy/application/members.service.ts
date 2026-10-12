@@ -2,7 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import type { Database, Tx } from '@workeasy/db';
 import type { OrganizationMemberView, WorkspaceMemberView } from '@workeasy/shared';
 import { Errors } from '../../../common/errors.js';
-import { decodeCursor, pageOf } from '../../../common/pagination.js';
+import { cursorScope, decodeCursor, pageOf } from '../../../common/pagination.js';
 import type { TenantRequestContext } from '../../../common/request-context.js';
 import { DATABASE } from '../../../infrastructure/providers.js';
 import { canGrant } from '../domain/access-policy.js';
@@ -18,7 +18,8 @@ export class MembersService {
   // ─── Organization members ────────────────────────────────────────────────────────────────────────────────
 
   async listOrganizationMembers(ctx: TenantRequestContext, limit: number, cursor?: string) {
-    const c = decodeCursor(cursor);
+    const scope = cursorScope(ctx.access, 'org.members');
+    const c = decodeCursor(cursor, scope);
     const rows = await inTenant(this.db, ctx, ({ tx }) =>
       tx.organizationMembership.findMany({
         where: {
@@ -35,7 +36,7 @@ export class MembersService {
         take: limit + 1,
       }),
     );
-    const page = pageOf(rows, limit, (r) => ({ t: r.joinedAt.toISOString(), id: r.id }));
+    const page = pageOf(rows, limit, (r) => ({ t: r.joinedAt.toISOString(), id: r.id }), scope);
     return {
       data: page.data.map(
         (m): OrganizationMemberView => ({

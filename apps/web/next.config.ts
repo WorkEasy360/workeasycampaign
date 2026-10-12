@@ -1,7 +1,5 @@
 import type { NextConfig } from 'next';
 
-const apiUrl = process.env.API_URL ?? 'http://127.0.0.1:4000';
-
 /** Security headers for every page. The API sets its own (stricter) headers. */
 const securityHeaders = [
   {
@@ -36,15 +34,13 @@ const config: NextConfig = {
     // larger than the API allows and is rejected with 413 — never imported partially.
     proxyClientMaxBodySize: '32mb',
   },
-  transpilePackages: ['@workeasy/shared'],
+  transpilePackages: ['@workeasy/shared', '@workeasy/content'],
   async headers() {
     return [{ source: '/:path*', headers: securityHeaders }];
   },
-  async rewrites() {
-    // Same-origin API: session cookies stay first-party, no CORS surface. The Next server forwards the client IP
-    // in X-Forwarded-For; the API trusts it only from configured proxies (TRUST_PROXY).
-    return [{ source: '/api/:path*', destination: `${apiUrl}/:path*` }];
-  },
+  // Same-origin API (/api/* → API_URL): src/proxy.ts, at RUNTIME — session cookies stay first-party, no CORS surface.
+  // Not a rewrite here: rewrites are frozen into the build and would ignore API_URL in a deployed image. The Next
+  // server forwards the client IP in X-Forwarded-For; the API trusts it only from configured proxies (TRUST_PROXY).
 };
 
 export default config;

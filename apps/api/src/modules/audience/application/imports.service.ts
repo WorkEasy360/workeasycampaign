@@ -5,7 +5,7 @@ import type { ImportIssueView, ImportMappingRequest, ImportOptions, ImportPrevie
 import { v7 as uuidv7 } from 'uuid';
 import { AppError, Errors } from '../../../common/errors.js';
 import { JOB_DISPATCHER, type JobDispatcher } from '../../../common/jobs.js';
-import { decodeCursor, encodeCursor } from '../../../common/pagination.js';
+import { cursorScope, decodeCursor, encodeCursor } from '../../../common/pagination.js';
 import type { TenantRequestContext } from '../../../common/request-context.js';
 import type { AppConfig } from '../../../config/env.js';
 import { FILE_STORE, type FileStore } from '../../../infrastructure/files/file-store.js';
@@ -124,7 +124,8 @@ export class ImportsService {
   async list(ctx: TenantRequestContext, limit: number, cursor?: string) {
     await this.expireStale(ctx);
     return inTenant(this.db, ctx, async ({ tx }) => {
-      const c = decodeCursor(cursor);
+      const scope = cursorScope(ctx.access, 'imports');
+      const c = decodeCursor(cursor, scope);
       const rows = await tx.contactImport.findMany({
         where: c ? { OR: [{ createdAt: { lt: new Date(c.t) } }, { createdAt: new Date(c.t), id: { lt: c.id } }] } : {},
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
@@ -132,7 +133,7 @@ export class ImportsService {
       });
       const page = rows.slice(0, limit);
       const last = page.at(-1);
-      return { data: page.map((r) => this.view(r)), nextCursor: rows.length > limit && last ? encodeCursor({ t: last.createdAt.toISOString(), id: last.id }) : null };
+      return { data: page.map((r) => this.view(r)), nextCursor: rows.length > limit && last ? encodeCursor({ t: last.createdAt.toISOString(), id: last.id }, scope) : null };
     });
   }
 
@@ -307,7 +308,7 @@ export class ImportsService {
   private dispatch(ctx: TenantRequestContext, importId: string) {
     const job: ImportJob = {
       tenant: { orgId: ctx.access.orgId, workspaceId: ctx.access.workspaceId! },
-      actor: { userId: ctx.principal.userId, email: ctx.principal.email, displayName: ctx.principal.displayName },
+      actor: { type: 'user', id: ctx.principal.userId },
       correlationId: ctx.meta.requestId,
       payload: { importId },
     };

@@ -63,7 +63,7 @@ describe('contacts', () => {
     const seen: string[] = [];
     let cursor: string | null = null;
     do {
-      const r = await owner.get(url(`/contacts?q=paging.test&limit=2${cursor ? `&cursor=${cursor}` : ''}`));
+      const r: { body: { data: { id: string }[]; nextCursor: string | null } } = await owner.get(url(`/contacts?q=paging.test&limit=2${cursor ? `&cursor=${cursor}` : ''}`));
       seen.push(...r.body.data.map((c: { id: string }) => c.id));
       cursor = r.body.nextCursor;
     } while (cursor);

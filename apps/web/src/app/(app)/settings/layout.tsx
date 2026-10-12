@@ -14,6 +14,8 @@ const TABS: { href: string; label: string; permission?: Permission }[] = [
   { href: '/settings/roles', label: 'Roles', permission: 'roles.read' },
   { href: '/settings/security', label: 'Security' },
   { href: '/settings/audit', label: 'Audit log', permission: 'audit.read' },
+  { href: '/settings/sending', label: 'Sending domains', permission: 'campaigns.read' },
+  { href: '/settings/usage', label: 'Usage', permission: 'billing.manage' },
 ];
 
 export default function SettingsLayout({ children }: { children: ReactNode }) {

@@ -44,6 +44,10 @@ beforeAll(async () => {
       [list, ws, big],
     );
     await c.query('ANALYZE contacts, contact_identities, list_memberships');
+    // Steady state: bulk inserts sit in the trigram GIN index's pending list until a VACUUM flushes it, and the planner
+    // charges for pending pages (MEASURED 2026-10-09: 26 pending pages tripled the index cost, 72 → 213; with more
+    // pending pages it chose a sequential scan). ANALYZE does not flush it; autovacuum does, at an unpredictable time.
+    await c.query('VACUUM contacts');
   });
   client = new pg.Client({ connectionString: testDatabaseUrls().app });
   await client.connect();

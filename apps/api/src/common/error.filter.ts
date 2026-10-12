@@ -18,9 +18,10 @@ export class ErrorFilter implements ExceptionFilter {
     let code: ApiErrorCode = 'internal_error';
     let message = 'Something went wrong on our side. Please try again.';
     let fields: Record<string, string[]> | undefined;
+    let findings: ApiErrorBody['error']['findings'];
 
     if (exception instanceof AppError) {
-      ({ status, code, message, fields } = exception);
+      ({ status, code, message, fields, findings } = exception);
       for (const [k, v] of Object.entries(exception.headers ?? {})) reply.header(k, v);
     } else if (exception instanceof HttpException) {
       status = exception.getStatus();
@@ -44,7 +45,11 @@ export class ErrorFilter implements ExceptionFilter {
       this.logger.error({ requestId, err: exception }, exception instanceof Error ? exception.stack : String(exception));
     }
 
-    const body: ApiErrorBody = { error: { code, message, ...(fields ? { fields } : {}), requestId } };
+    // An error answered before the request body was completely received (e.g. a 413 that stops reading an oversize
+    // upload) leaves the connection mid-body: a client that stops sending but keeps the socket alive would have its NEXT
+    // request swallowed as the rest of this body and hang. Close such connections so they are never reused.
+    if (!req.raw.complete) reply.header('connection', 'close');
+    const body: ApiErrorBody = { error: { code, message, ...(fields ? { fields } : {}), ...(findings ? { findings } : {}), requestId } };
     void reply.status(status).header('cache-control', 'no-store').send(body);
   }
 }

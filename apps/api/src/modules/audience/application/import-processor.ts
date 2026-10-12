@@ -34,17 +34,20 @@ export function isTransientImportError(err: unknown): boolean {
 }
 export const importStorageKey = (workspaceId: string, importId: string) => `imports/${workspaceId}/${importId}.csv`;
 
-/** Job envelope (same shape as worker tenant jobs) — everything needed to run or resume without the request. */
+/**
+ * Job envelope (the worker tenant-job shape; docs/imports.md §7). Ids only: the durable queue persists envelopes, so the
+ * actor is the user id (Phase 7.6 — no email or name in job rows); the actor's display details are read at run time.
+ */
 export interface ImportJob {
   tenant: { orgId: string; workspaceId: string };
-  actor: { userId: string; email: string; displayName: string };
+  actor: { type: 'user'; id: string };
   correlationId: string;
   payload: { importId: string };
 }
 
-export function jobContext(job: ImportJob): TenantRequestContext {
+export function jobContext(job: ImportJob, actor: { email: string; displayName: string }): TenantRequestContext {
   return {
-    principal: { userId: job.actor.userId, email: job.actor.email, displayName: job.actor.displayName, emailVerified: true, sessionId: 'job', provider: 'job', authMethods: [] },
+    principal: { userId: job.actor.id, email: actor.email, displayName: actor.displayName, emailVerified: true, sessionId: 'job', provider: 'job', authMethods: [] },
     access: { orgId: job.tenant.orgId, workspaceId: job.tenant.workspaceId, orgRoleKey: null, permissions: new Set(), workspaceAccess: null },
     meta: { requestId: job.correlationId, ipAddress: null, userAgent: null },
   };
@@ -111,7 +114,11 @@ export class ImportProcessor {
 
   /** Real run (job handler). Resumes after `processed_rows`; each chunk commits atomically with its checkpoint. */
   async run(job: ImportJob): Promise<void> {
-    const ctx = jobContext(job);
+    // The audit records who started the import: their current display details, read now (not carried in the job).
+    const user = await this.db.withTenant({ orgId: job.tenant.orgId, workspaceId: job.tenant.workspaceId, userId: null }, (tx) =>
+      tx.user.findUnique({ where: { id: job.actor.id }, select: { email: true, displayName: true } }),
+    );
+    const ctx = jobContext(job, user ?? { email: '', displayName: 'Deleted user' });
     const importId = job.payload.importId;
     try {
       const imp = await this.load(ctx, importId);
@@ -388,8 +395,9 @@ export class ImportProcessor {
       }
     }
 
-    for (const listId of options.listIds ?? []) await addToList(uow, orgId, workspaceId, listId, touched, 'import', userId);
-    for (const tagId of options.tagIds ?? []) await tagContacts(uow, orgId, workspaceId, tagId, touched, userId);
+    // Sources in ascending id order: every transaction touching several lists/tags locks them in the same order.
+    for (const listId of [...(options.listIds ?? [])].sort()) await addToList(uow, orgId, workspaceId, listId, touched, 'import', userId);
+    for (const tagId of [...(options.tagIds ?? [])].sort()) await tagContacts(uow, orgId, workspaceId, tagId, touched, userId);
     await lockFieldKeys(tx, defs, usedKeys);
 
     const written = await this.writeIssues(tx, ctx, imp.id, 'run', issues, issueBudget);

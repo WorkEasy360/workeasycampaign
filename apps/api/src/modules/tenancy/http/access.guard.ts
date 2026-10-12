@@ -29,7 +29,7 @@ export class AccessGuard implements CanActivate {
       context.getHandler(),
       context.getClass(),
     ]);
-    if (!policy || policy.kind === 'public' || policy.kind === 'user') return true;
+    if (!policy || policy.kind === 'public' || policy.kind === 'user' || policy.kind === 'token') return true;
 
     const req = context.switchToHttp().getRequest<FastifyRequest>();
     const principal = req.principal;

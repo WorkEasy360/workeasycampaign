@@ -1,0 +1,127 @@
+# Workeasy Campaigns — Prometheus alerting rules (Phase 7.12; docs/operations/observability.md §4).
+# Every alert is actionable and links to its runbook section (docs/runbooks/campaigns.md). Thresholds are starting
+# points for a first production deployment; tune them from observed baselines, never by silencing.
+groups:
+  - name: workeasy-campaigns
+    rules:
+      - alert: JobQueueBacklog
+        expr: max by (job) (workeasy_job_queue_oldest_due_seconds) > 300
+        for: 10m
+        labels: { severity: page }
+        annotations:
+          summary: "Jobs of {{ $labels.job }} have waited more than 5 minutes to run"
+          runbook: docs/runbooks/campaigns.md#61-jobqueuebacklog
+
+      - alert: JobDeadLetters
+        expr: sum(increase(workeasy_job_dead_letters_total[15m])) > 0
+        labels: { severity: ticket }
+        annotations:
+          summary: "A background job exhausted its retries (dead letter)"
+          runbook: docs/runbooks/campaigns.md#62-jobdeadletters
+
+      - alert: CampaignSchedulerLag
+        expr: max(workeasy_campaign_scheduler_lag_seconds) > 300
+        for: 5m
+        labels: { severity: page }
+        annotations:
+          summary: "Scheduled campaigns start more than 5 minutes late"
+          runbook: docs/runbooks/campaigns.md#63-campaignschedulerlag
+
+      - alert: CampaignSchedulerFailing
+        expr: sum(increase(workeasy_campaign_scheduler_ticks_total{outcome="failed"}[10m])) >= 3
+        labels: { severity: page }
+        annotations:
+          summary: "The campaign scheduler tick keeps failing"
+          runbook: docs/runbooks/campaigns.md#64-campaignschedulerfailing
+
+      - alert: CampaignExecutionStuck
+        expr: sum(increase(workeasy_campaign_execution_stalled_total[30m])) > 0
+        labels: { severity: page }
+        annotations:
+          summary: "A campaign run exhausted its retries and is waiting for the recovery sweep"
+          runbook: docs/runbooks/campaigns.md#65-campaignexecutionstuck
+
+      - alert: ProviderFailureSpike
+        expr: |
+          sum(rate(workeasy_provider_failures_total{kind=~"transient|unknown|configuration"}[10m]))
+            / clamp_min(sum(rate(workeasy_campaign_deliveries_total[10m])), 1) > 0.05
+        for: 10m
+        labels: { severity: page }
+        annotations:
+          summary: "More than 5% of hand-offs fail at the provider"
+          runbook: docs/runbooks/campaigns.md#66-providerfailurespike
+
+      - alert: ProviderConfigurationFailure
+        expr: sum(increase(workeasy_provider_failures_total{kind="configuration"}[10m])) > 0
+        labels: { severity: page }
+        annotations:
+          summary: "The provider refuses every send (credentials, domain or account): campaigns are waiting"
+          runbook: docs/runbooks/campaigns.md#67-providerconfigurationfailure
+
+      - alert: RetryStorm
+        expr: sum(rate(workeasy_campaign_execution_retries_total{reason!="send_rate"}[5m])) > 1 or sum(rate(workeasy_job_retries_total[5m])) > 5
+        for: 10m
+        labels: { severity: ticket }
+        annotations:
+          summary: "Retries are sustained above normal (infrastructure or provider problem)"
+          runbook: docs/runbooks/campaigns.md#68-retrystorm
+
+      - alert: BounceSpike
+        expr: |
+          sum(rate(workeasy_webhook_events_total{type="bounced",result="recorded"}[30m]))
+            / clamp_min(sum(rate(workeasy_webhook_events_total{type="delivered",result="recorded"}[30m])), 1) > 0.05
+        for: 15m
+        labels: { severity: page }
+        annotations:
+          summary: "Hard bounces above 5% of deliveries: sender reputation at risk"
+          runbook: docs/runbooks/campaigns.md#69-bouncespike
+
+      - alert: ComplaintSpike
+        expr: |
+          sum(rate(workeasy_webhook_events_total{type="complained",result="recorded"}[1h]))
+            / clamp_min(sum(rate(workeasy_webhook_events_total{type="delivered",result="recorded"}[1h])), 1) > 0.001
+        for: 30m
+        labels: { severity: page }
+        annotations:
+          summary: "Complaints above 0.1% of deliveries: sender reputation at risk"
+          runbook: docs/runbooks/campaigns.md#610-complaintspike
+
+      - alert: WebhookFailures
+        expr: sum(rate(workeasy_webhook_rejected_total[15m])) > 0.1 or sum(rate(workeasy_http_requests_total{route="/v1/webhooks/:provider",status="5xx"}[15m])) > 0
+        for: 15m
+        labels: { severity: ticket }
+        annotations:
+          summary: "Provider webhooks are refused (signature/replay) or failing — feedback may be lost"
+          runbook: docs/runbooks/campaigns.md#611-webhookfailures
+
+      - alert: DatabaseSaturation
+        expr: max(workeasy_database_ping_seconds) > 0.25 or min(workeasy_database_ping_seconds) < 0
+        for: 5m
+        labels: { severity: page }
+        annotations:
+          summary: "PostgreSQL is slow (ping > 250 ms) or unreachable"
+          runbook: docs/runbooks/campaigns.md#612-databasesaturation
+
+      - alert: RedisUnavailable
+        expr: min(workeasy_redis_ping_seconds) < 0
+        for: 2m
+        labels: { severity: page }
+        annotations:
+          summary: "The shared rate-limit store (Redis) is unreachable: rate-limited routes (login, webhooks) answer 503"
+          runbook: docs/runbooks/campaigns.md#615-redisunavailable
+
+      - alert: ApiServerErrors
+        expr: sum(rate(workeasy_http_requests_total{status="5xx"}[5m])) / clamp_min(sum(rate(workeasy_http_requests_total[5m])), 1) > 0.02
+        for: 10m
+        labels: { severity: page }
+        annotations:
+          summary: "More than 2% of API requests fail with a server error"
+          runbook: docs/runbooks/campaigns.md#613-apiservererrors
+
+      - alert: AudienceCountBitmapBacklog
+        expr: max(workeasy_audience_count_maintenance_backlog{kind="rebuild"}) > 0
+        for: 30m
+        labels: { severity: ticket }
+        annotations:
+          summary: "Audience count bitmaps wait for a rebuild for more than 30 minutes (estimates use the slower exact path)"
+          runbook: docs/runbooks/campaigns.md#614-audiencecountbitmapbacklog

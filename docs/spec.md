@@ -281,6 +281,7 @@ Showing the order and the reason per contact is `[OUR_IMPROVEMENT]`.
 **States:**
 - **Zoho** `[ZOHO_PARITY]`: drafts, scheduled, inprogress, sent, stopped, canceled, tobereviewed, reviewed, paused, intesting.
 - **Ours** `[OUR_IMPROVEMENT]`: a 13-state machine with server-side transitions (`apps/api/src/modules/campaigns/domain/campaign-state.ts`). The UI receives `allowedActions` and never computes transitions.
+- **Superseded (Phase 6 architecture review, pending approval):** the foundation's 13-state scaffold mixed form completeness into the lifecycle. Phase 6 adopts 7 states (`draft, scheduled, sending, paused, completed, cancelled, failed`) with readiness computed separately — `docs/contracts/phase-6-campaign.md` §2. The scaffold stays in place until milestone 6.1 replaces it.
 
 **Actions** `[ZOHO_PARITY]`:
 - Clone from a draft or a sent campaign.

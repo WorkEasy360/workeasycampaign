@@ -40,7 +40,44 @@ export type AuditAction =
   | 'import.started'
   | 'import.completed'
   | 'import.failed'
-  | 'import.cancelled';
+  | 'import.cancelled'
+  // Campaigns (Phase 6, contract §15 Audit column). Draft edits are covered by domain events only.
+  | 'campaign.created'
+  | 'campaign.deleted'
+  | 'campaign.restored'
+  | 'campaign.scheduled'
+  | 'campaign.rescheduled'
+  | 'campaign.unscheduled'
+  | 'campaign.paused'
+  | 'campaign.resumed'
+  | 'campaign.cancelled'
+  // Phase 6.10 (additive): user actions previously covered by events only, and system execution outcomes
+  // (actor_type 'system', correlation = the scheduling request). Draft edits stay events-only (routine, frequent).
+  | 'campaign.returned_to_draft'
+  | 'campaign.version_restored'
+  | 'campaign.execution_started'
+  | 'campaign.execution_completed'
+  | 'campaign.execution_failed'
+  // Email templates (content amendment §6): reusable content shared by a workspace — changes are audited.
+  | 'template.created'
+  | 'template.updated'
+  | 'template.deleted'
+  | 'template.restored'
+  // Reusable saved blocks (Phase 7 §S): changes audited like templates.
+  | 'snippet.created'
+  | 'snippet.updated'
+  | 'snippet.deleted'
+  // Sending domains and sender identities (Phase 7.8b).
+  | 'sending_domain.created'
+  | 'sending_domain.status_changed'
+  | 'sending_domain.deleted'
+  | 'sender_identity.created'
+  | 'sender_identity.updated'
+  | 'sender_identity.deleted'
+  | 'campaign.template_applied'
+  // Phase 7.3: a test send of the draft to the requesting user's own address (no content, no address in metadata).
+  | 'campaign.test_sent'
+  | 'campaign.sending_rate_changed';
 
 export interface AuditEntry {
   action: AuditAction;

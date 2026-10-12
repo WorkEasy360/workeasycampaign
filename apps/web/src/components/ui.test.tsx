@@ -30,9 +30,9 @@ describe('ConfirmDialog', () => {
     render(<ConfirmDialog open onClose={() => undefined} onConfirm={onConfirm} title="Delete Acme?" body="Gone" confirmLabel="Delete organization" confirmText="Acme" />);
     const confirm = screen.getByRole('button', { name: 'Delete organization' });
     expect(confirm).toBeDisabled();
-    await userEvent.type(screen.getByLabelText('Type "Acme" to confirm'), 'Acm');
+    await userEvent.type(screen.getByLabelText('Type "Acme" to confirm'), 'Acm', { delay: null });
     expect(confirm).toBeDisabled();
-    await userEvent.type(screen.getByLabelText('Type "Acme" to confirm'), 'e');
+    await userEvent.type(screen.getByLabelText('Type "Acme" to confirm'), 'e', { delay: null });
     expect(confirm).toBeEnabled();
     await userEvent.click(confirm);
     expect(onConfirm).toHaveBeenCalledOnce();

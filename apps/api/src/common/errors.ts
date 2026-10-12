@@ -1,4 +1,4 @@
-import type { ApiErrorCode } from '@workeasy/shared';
+import type { ApiErrorCode, ReadinessFinding } from '@workeasy/shared';
 
 /** The only error type services throw on purpose. Everything else is reported as internal_error. */
 export class AppError extends Error {
@@ -8,6 +8,8 @@ export class AppError extends Error {
     message: string,
     readonly fields?: Record<string, string[]>,
     readonly headers?: Record<string, string>,
+    /** Only with PREFLIGHT_FAILED: the blocking findings (never personal data). */
+    readonly findings?: ReadinessFinding[],
   ) {
     super(message);
     this.name = 'AppError';
@@ -32,6 +34,8 @@ export const Errors = {
     new AppError('account_locked', 429, 'Too many failed attempts. Try again later or reset your password.', undefined, {
       'Retry-After': String(retryAfterSeconds),
     }),
+  serviceUnavailable: (message: string, retryAfterSeconds = 5) =>
+    new AppError('service_unavailable', 503, message, undefined, { 'Retry-After': String(retryAfterSeconds) }),
   rateLimited: (retryAfterSeconds: number) =>
     new AppError('rate_limited', 429, 'Too many requests. Slow down and try again shortly.', undefined, {
       'Retry-After': String(retryAfterSeconds),

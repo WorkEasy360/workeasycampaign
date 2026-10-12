@@ -1,7 +1,7 @@
+import { effectiveChannelState, evaluateEligibility, type EligibilityFacts } from '@workeasy/audience-core';
 import { describe, expect, it } from 'vitest';
-import { canChangeSubscription, effectiveChannelState, evidenceProblems, nextChannelState, nextTopicState } from './consent.js';
+import { canChangeSubscription, evidenceProblems, nextChannelState, nextTopicState } from './consent.js';
 import { definitionProblems, type FieldDefinition, validateFieldValue } from './custom-fields.js';
-import { evaluateEligibility, type EligibilityFacts } from './eligibility.js';
 import { csvSafe, decideRow, suggestMapping } from './import-decision.js';
 import { buildSearchText, normalizeEmail, normalizeIdentity, normalizePhone } from './normalization.js';
 

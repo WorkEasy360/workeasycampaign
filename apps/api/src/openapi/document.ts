@@ -40,7 +40,8 @@ export function buildOpenApiDocument() {
       tags: [route.tag],
       summary: route.summary,
       description: `Access: \`${route.access}\``,
-      security: route.access === 'public' ? [] : [{ session: [] }],
+      // 'token' routes are authorized by a signed token in the path only (no session).
+      security: route.access === 'public' || route.access === 'token' ? [] : [{ session: [] }],
       parameters: [...params, ...query, ...headers],
       ...(route.body
         ? { requestBody: { required: true, content: { 'application/json': { schema: z.toJSONSchema(route.body, { io: 'input' }) } } } }

@@ -1,0 +1,7 @@
+{
+  "extends": "@workeasy/config/tsconfig.base.json",
+  "//": "Pure Audience read-side rules and ports (docs/contracts/phase-5-audience.md §9.8). Node built-ins only; no database, framework or I/O.",
+  "compilerOptions": { "outDir": "dist", "rootDir": "src" },
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts"]
+}

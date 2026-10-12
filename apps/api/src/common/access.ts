@@ -9,16 +9,22 @@ import type { Permission } from '@workeasy/shared';
  *   user          – any signed-in user; acts only on their own data
  *   organization  – route has :orgId; caller must be an active member and hold `permission`
  *   workspace     – route has :workspaceId; caller needs organization membership + workspace access + `permission`
+ *   token         – the ONLY authority is a signed token in the URL (e.g. an unsubscribe link, Phase 7.8). Session
+ *                   cookies are ignored, so CSRF does not apply (a forged cross-site request carries no authority the
+ *                   attacker does not already hold); the handler must verify the token before doing anything.
  */
 export type AccessPolicy =
   | { kind: 'public' }
   | { kind: 'user' }
   | { kind: 'organization'; permission: Permission | null }
-  | { kind: 'workspace'; permission: Permission | null };
+  | { kind: 'workspace'; permission: Permission | null }
+  | { kind: 'token' };
 
 export const ACCESS_POLICY = 'workeasy:access-policy';
 
 export const Public = () => SetMetadata(ACCESS_POLICY, { kind: 'public' } satisfies AccessPolicy);
+/** Authorized by a signed token in the URL only (see `token` above). */
+export const TokenAuthorized = () => SetMetadata(ACCESS_POLICY, { kind: 'token' } satisfies AccessPolicy);
 export const Authenticated = () => SetMetadata(ACCESS_POLICY, { kind: 'user' } satisfies AccessPolicy);
 /** `null` permission = any active member may call it (still membership-checked). */
 export const OrgAccess = (permission: Permission | null) =>

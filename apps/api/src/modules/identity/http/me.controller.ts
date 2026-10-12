@@ -4,7 +4,7 @@ import { changePasswordRequest, paginationQuery, type SecurityEventView, updateP
 import type { FastifyReply } from 'fastify';
 import { Authenticated, RateLimit } from '../../../common/access.js';
 import { Errors } from '../../../common/errors.js';
-import { decodeCursor, pageOf } from '../../../common/pagination.js';
+import { cursorScope, decodeCursor, pageOf } from '../../../common/pagination.js';
 import { UserCtx, type UserRequestContext } from '../../../common/request-context.js';
 import { parse, routeId } from '../../../common/validation.js';
 import type { AppConfig } from '../../../config/env.js';
@@ -88,7 +88,8 @@ export class MeController {
   @Authenticated()
   async securityEvents(@UserCtx() ctx: UserRequestContext, @Query() query: unknown) {
     const { limit, cursor } = parse(paginationQuery, query);
-    const c = decodeCursor(cursor);
+    const scope = cursorScope({ userId: ctx.principal.userId }, 'me.security_events');
+    const c = decodeCursor(cursor, scope);
     const rows = await this.db.asUser(ctx.principal.userId, (tx) =>
       tx.securityEvent.findMany({
         where: {
@@ -99,7 +100,7 @@ export class MeController {
         take: limit + 1,
       }),
     );
-    const page = pageOf(rows, limit, (r) => ({ t: r.occurredAt.toISOString(), id: r.id }));
+    const page = pageOf(rows, limit, (r) => ({ t: r.occurredAt.toISOString(), id: r.id }), scope);
     return {
       data: page.data.map(
         (e): SecurityEventView => ({

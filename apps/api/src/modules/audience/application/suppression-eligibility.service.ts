@@ -1,14 +1,13 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { type EligibilityEvaluator, EligibilityTopicNotFoundError } from '@workeasy/audience-core';
+import { tenantScopeFor } from '@workeasy/audience-infra';
 import { type Database, isUniqueViolation, type Tx } from '@workeasy/db';
-import type { Channel, EligibilityResponse, EligibilityResult, MessagePurpose, SuppressionView } from '@workeasy/shared';
+import type { Channel, EligibilityResponse, MessagePurpose, SuppressionView, TopicPolicy } from '@workeasy/shared';
 import { Errors } from '../../../common/errors.js';
-import { decodeCursor, encodeCursor } from '../../../common/pagination.js';
+import { cursorScope, decodeCursor, encodeCursor } from '../../../common/pagination.js';
 import type { TenantRequestContext } from '../../../common/request-context.js';
-import type { AppConfig } from '../../../config/env.js';
-import { APP_CONFIG, DATABASE } from '../../../infrastructure/providers.js';
-import { effectiveConsent } from './consent.service.js';
+import { DATABASE, ELIGIBILITY_EVALUATOR } from '../../../infrastructure/providers.js';
 import { inTenant, type TenantUnitOfWork } from '../../tenancy/application/tenant-tx.js';
-import { ADDRESS_KIND_FOR_CHANNEL, evaluateEligibility } from '../domain/eligibility.js';
 import { displayName, normalizeIdentity } from '../domain/normalization.js';
 import { requireLiveContact, suppressionView } from './audience-support.js';
 
@@ -49,7 +48,8 @@ export class SuppressionService {
 
   async list(ctx: TenantRequestContext, q: { status: 'active' | 'lifted' | 'all'; contactId?: string; limit: number; cursor?: string }) {
     return inTenant(this.db, ctx, async ({ tx }) => {
-      const c = decodeCursor(q.cursor);
+      const scope = cursorScope(ctx.access, 'suppressions', { ...q });
+      const c = decodeCursor(q.cursor, scope);
       const rows = await tx.suppression.findMany({
         where: {
           ...(q.status === 'active' ? { liftedAt: null } : q.status === 'lifted' ? { liftedAt: { not: null } } : {}),
@@ -71,7 +71,7 @@ export class SuppressionService {
               : null,
           ),
         ),
-        nextCursor: rows.length > q.limit && last ? encodeCursor({ t: last.createdAt.toISOString(), id: last.id }) : null,
+        nextCursor: rows.length > q.limit && last ? encodeCursor({ t: last.createdAt.toISOString(), id: last.id }, scope) : null,
       };
     });
   }
@@ -122,85 +122,33 @@ export class SuppressionService {
 }
 
 /**
- * The single eligibility entry point (docs/eligibility.md). Loads facts for many contacts in a fixed number of
- * queries, then applies the pure rule set. Later senders (campaigns, journeys) call `evaluate` with their own tx.
+ * The single eligibility entry point (docs/eligibility.md). Rules and fact loading live in the Audience read-side
+ * packages (@workeasy/audience-core rules + port, @workeasy/audience-infra adapter, milestone 6.2); this service keeps
+ * the frozen v1 API — HTTP `check` and `evaluate(tx, workspaceId, …)` — and maps an unknown topic to the same validation error as before.
  */
 @Injectable()
 export class EligibilityService {
   constructor(
     @Inject(DATABASE) private readonly db: Database,
-    @Inject(APP_CONFIG) private readonly config: AppConfig,
+    @Inject(ELIGIBILITY_EVALUATOR) private readonly evaluator: EligibilityEvaluator<Tx>,
   ) {}
 
-  async check(ctx: TenantRequestContext, req: { contactIds: string[]; channel: Channel; purpose: MessagePurpose; topicId?: string }): Promise<EligibilityResponse> {
+  async check(ctx: TenantRequestContext, req: { contactIds: string[]; channel: Channel; purpose: MessagePurpose; topicId?: string; topicPolicy?: TopicPolicy }): Promise<EligibilityResponse> {
     return inTenant(this.db, ctx, ({ tx }) => this.evaluate(tx, ctx.access.workspaceId!, req));
   }
 
   /**
    * Service contract for later senders (docs/eligibility.md): call with a transaction already scoped to the
-   * workspace (RLS), so contacts of other workspaces are simply not found.
+   * workspace (RLS), so contacts of other workspaces are simply not found. A workspace id that does not match the
+   * transaction's tenant is refused (TenantScopeMismatchError) before anything is read.
    */
-  async evaluate(tx: Tx, workspaceId: string, req: { contactIds: string[]; channel: Channel; purpose: MessagePurpose; topicId?: string }): Promise<EligibilityResponse> {
-    const ids = [...new Set(req.contactIds)];
-    const topic = req.topicId ? await tx.topic.findUnique({ where: { id: req.topicId }, select: { status: true, kind: true } }) : null;
-    // An unknown topic (or one of another workspace — invisible under RLS) is a bad request, not a per-contact reason.
-    if (req.topicId && (!topic || topic.kind !== 'topic')) throw Errors.validation({ topicId: ['No such topic in this workspace'] });
-    const contacts = await tx.contact.findMany({ where: { id: { in: ids } }, select: { id: true, deletedAt: true, erasedAt: true, subscriptionType: true } });
-    const kind = ADDRESS_KIND_FOR_CHANNEL[req.channel];
-    const identities = await tx.contactIdentity.findMany({
-      where: { contactId: { in: ids }, kind },
-      select: { id: true, contactId: true, valueNormalized: true, isPrimary: true },
-    });
-    const primary = new Map(identities.filter((i) => i.isPrimary).map((i) => [i.contactId, i]));
-    const suppressions = await tx.suppression.findMany({
-      where: {
-        liftedAt: null,
-        channel: { in: [req.channel, 'all'] },
-        OR: [{ contactId: { in: ids } }, ...(identities.length ? [{ identityKind: kind, valueNormalized: { in: identities.map((i) => i.valueNormalized) } }] : [])],
-      },
-      select: { contactId: true, valueNormalized: true, channel: true, reason: true },
-    });
-    const consent = await effectiveConsent(
-      tx,
-      this.config.fingerprintSecret,
-      workspaceId,
-      req.channel,
-      contacts.map((c) => c.id),
-      new Map([...primary].map(([contactId, i]) => [contactId, i.valueNormalized])),
-    );
-    const prefs = req.topicId
-      ? await tx.contactTopicPreference.findMany({ where: { contactId: { in: ids }, topicId: req.topicId }, select: { contactId: true, status: true } })
-      : [];
-
-    const results: EligibilityResult[] = contacts.map((c) => {
-      const addresses = identities.filter((i) => i.contactId === c.id).map((i) => i.valueNormalized);
-      const applicable = suppressions.filter((s) => s.contactId === c.id || (s.valueNormalized && addresses.includes(s.valueNormalized)));
-      const r = evaluateEligibility(
-        {
-          contact: { id: c.id, deleted: !!c.deletedAt, erased: !!c.erasedAt, subscriptionType: c.subscriptionType },
-          addresses,
-          suppressions: applicable,
-          consent: { state: consent.get(c.id)?.state ?? 'none', forCurrentAddress: consent.get(c.id)?.forCurrentAddress ?? true },
-          topic:
-            req.topicId && topic
-              ? {
-                  status: topic.status as 'active' | 'archived',
-                  preference: (prefs.find((p) => p.contactId === c.id)?.status ?? 'none') as 'none',
-                }
-              : undefined,
-        },
-        { channel: req.channel, purpose: req.purpose, topicId: req.topicId ?? null },
-      );
-      return {
-        contactId: c.id,
-        channel: req.channel,
-        purpose: req.purpose,
-        topicId: req.topicId ?? null,
-        ...r,
-        addressIdentityId: c.erasedAt ? null : (primary.get(c.id)?.id ?? null),
-      };
-    });
-    const found = new Set(contacts.map((c) => c.id));
-    return { results, notFound: ids.filter((id) => !found.has(id)) };
+  async evaluate(tx: Tx, workspaceId: string, req: { contactIds: string[]; channel: Channel; purpose: MessagePurpose; topicId?: string; topicPolicy?: TopicPolicy }): Promise<EligibilityResponse> {
+    try {
+      return await this.evaluator.evaluate(await tenantScopeFor(tx, workspaceId), req);
+    } catch (err) {
+      // An unknown topic (or one of another workspace — invisible under RLS) is a bad request, not a per-contact reason.
+      if (err instanceof EligibilityTopicNotFoundError) throw Errors.validation({ topicId: ['No such topic in this workspace'] });
+      throw err;
+    }
   }
 }

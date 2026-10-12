@@ -19,6 +19,8 @@ export const ELIGIBILITY_REASONS = [
   'CONSENT_ADDRESS_CHANGED',
   'TOPIC_NOT_SUBSCRIBED',
   'TOPIC_INACTIVE',
+  // Evaluated since Eligibility v1.1 (topicPolicy 'block_unsubscribed' only)
+  'TOPIC_UNSUBSCRIBED',
   // Reserved for later phases
   'FREQUENCY_CAP',
   'QUIET_HOURS',
@@ -29,9 +31,18 @@ export const ELIGIBILITY_REASONS = [
 ] as const;
 export type IneligibilityReason = (typeof ELIGIBILITY_REASONS)[number];
 
-export const EVALUATED_ELIGIBILITY_REASONS: readonly IneligibilityReason[] = ELIGIBILITY_REASONS.slice(0, 12);
+export const EVALUATED_ELIGIBILITY_REASONS: readonly IneligibilityReason[] = ELIGIBILITY_REASONS.slice(0, 13);
 
 export type MessagePurpose = 'marketing' | 'transactional';
+
+/**
+ * Eligibility v1.1 topic policy (docs/eligibility.md §v1.1). Omitted ⇒ byte-for-byte v1. `require_subscription` is v1's
+ * explicit name: UNSET and UNSUBSCRIBED → TOPIC_NOT_SUBSCRIBED. `block_unsubscribed` (Campaigns): only an explicit
+ * unsubscribe blocks (TOPIC_UNSUBSCRIBED); UNSET passes the topic gate but is never consent — channel consent stays a
+ * separate, mandatory gate.
+ */
+export const TOPIC_POLICIES = ['require_subscription', 'block_unsubscribed'] as const;
+export type TopicPolicy = (typeof TOPIC_POLICIES)[number];
 
 export interface EligibilityReasonDetail {
   code: IneligibilityReason;
@@ -46,8 +57,10 @@ export interface EligibilityRequest {
   channel: Channel;
   /** Default `marketing`. `transactional` skips subscription, consent and topic checks — never suppression. */
   purpose?: MessagePurpose;
-  /** A topic of the current workspace; an unknown topic is a 422 validation error for the whole request. */
+  /** A topic of the current workspace; an unknown topic is a `400 validation_failed` error (field `topicId`) for the whole request. */
   topicId?: string;
+  /** v1.1, optional. Omitted ⇒ v1 behaviour. Only meaningful with `topicId` and purpose `marketing`. */
+  topicPolicy?: TopicPolicy;
 }
 
 export interface EligibilityResult {

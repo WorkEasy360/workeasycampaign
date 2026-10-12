@@ -217,6 +217,23 @@ describe('webhook tenant resolution', () => {
   it('the runtime role cannot enumerate other tenants’ routes directly', async () => {
     expect(await db.withTenant(ctxA(), (tx) => tx.providerMessageRoute.count())).toBe(0);
   });
+
+  it('SMS opt-out targets: a number nobody texted resolves to nothing; malformed numbers are not queried; PUBLIC cannot execute', async () => {
+    expect(await db.system.smsOptOutTargets('twilio', '+14155550100')).toEqual([]);
+    expect(await db.system.smsOptOutTargets('twilio', "+1' OR 1=1 --")).toEqual([]);
+    const client = new pg.Client({ connectionString: testDatabaseUrls().owner });
+    await client.connect();
+    try {
+      const { rows } = await client.query(`SELECT p.prosecdef AS definer, p.proconfig AS config,
+                                                  has_function_privilege('public', p.oid, 'EXECUTE') AS public_exec,
+                                                  has_function_privilege('workeasy_app', p.oid, 'EXECUTE') AS app_exec
+                                           FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+                                           WHERE n.nspname = 'app' AND p.proname = 'sms_opt_out_targets'`);
+      expect(rows).toEqual([{ definer: true, config: ['search_path=pg_catalog, public'], public_exec: false, app_exec: true }]);
+    } finally {
+      await client.end();
+    }
+  });
 });
 
 describe('analytics and reporting cannot aggregate across tenants', () => {

@@ -1,3 +1,4 @@
+import { CAMPAIGN_EVENT_PAYLOAD_SCHEMAS as C } from '@workeasy/shared';
 import { z } from 'zod';
 
 /**
@@ -80,6 +81,25 @@ export const DOMAIN_EVENTS = {
     }),
   },
   'import.failed': { version: 1, aggregate: 'import', payload: z.object({ reason: z.string() }) },
+
+  // ─── Campaigns (Phase 6, docs/events.md §"Campaign event contract v1"). Aggregate `campaign`; ids, states, counts,
+  // timestamps and changed field names only. Payload schemas are the shared contract (strict: no undeclared field).
+  'campaign.created': { version: 1, aggregate: 'campaign', payload: C['campaign.created'] },
+  'campaign.updated': { version: 1, aggregate: 'campaign', payload: C['campaign.updated'] },
+  'campaign.deleted': { version: 1, aggregate: 'campaign', payload: C['campaign.deleted'] },
+  'campaign.restored': { version: 1, aggregate: 'campaign', payload: C['campaign.restored'] },
+  'campaign.version_created': { version: 1, aggregate: 'campaign', payload: C['campaign.version_created'] },
+  'campaign.scheduled': { version: 1, aggregate: 'campaign', payload: C['campaign.scheduled'] },
+  'campaign.rescheduled': { version: 1, aggregate: 'campaign', payload: C['campaign.rescheduled'] },
+  'campaign.unscheduled': { version: 1, aggregate: 'campaign', payload: C['campaign.unscheduled'] },
+  'campaign.started': { version: 1, aggregate: 'campaign', payload: C['campaign.started'] },
+  'campaign.audience_materialized': { version: 1, aggregate: 'campaign', payload: C['campaign.audience_materialized'] },
+  'campaign.paused': { version: 1, aggregate: 'campaign', payload: C['campaign.paused'] },
+  'campaign.resumed': { version: 1, aggregate: 'campaign', payload: C['campaign.resumed'] },
+  'campaign.cancelled': { version: 1, aggregate: 'campaign', payload: C['campaign.cancelled'] },
+  'campaign.completed': { version: 1, aggregate: 'campaign', payload: C['campaign.completed'] },
+  'campaign.failed': { version: 1, aggregate: 'campaign', payload: C['campaign.failed'] },
+  'campaign.returned_to_draft': { version: 1, aggregate: 'campaign', payload: C['campaign.returned_to_draft'] },
 } as const;
 
 export type DomainEventType = keyof typeof DOMAIN_EVENTS;

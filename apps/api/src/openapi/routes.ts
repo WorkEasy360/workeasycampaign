@@ -1,5 +1,8 @@
+import { z } from 'zod';
 import {
   auditLogQuery,
+  usageSummaryQuery,
+  usageSummarySchema,
   changePasswordRequest,
   createInvitationRequest,
   createOrganizationRequest,
@@ -23,7 +26,11 @@ import {
   verifyEmailRequest,
 } from '@workeasy/shared';
 import type { RouteDoc } from './route-doc.js';
+
+/** Response schema as JSON Schema (same helper as routes-campaigns). */
+const out = (schema: z.ZodType) => z.toJSONSchema(schema, { io: 'output', unrepresentable: 'any' }) as Record<string, unknown>;
 import { AUDIENCE_ROUTES } from './routes-audience.js';
+import { CAMPAIGN_ROUTES, SENDER_ROUTES, TEMPLATE_ROUTES, UNSUBSCRIBE_ROUTES, WEBHOOK_ROUTES } from './routes-campaigns.js';
 
 export type { RouteDoc } from './route-doc.js';
 
@@ -32,7 +39,8 @@ const r = (d: RouteDoc) => d;
 /** Every HTTP route. test/api/routes.test.ts fails if a route exists without an entry here (or vice versa). */
 export const ROUTES: RouteDoc[] = [
   r({ method: 'GET', path: '/health', tag: 'System', summary: 'Liveness probe', access: 'public', success: 200 }),
-  r({ method: 'GET', path: '/health/ready', tag: 'System', summary: 'Readiness probe (database)', access: 'public', success: 200 }),
+  r({ method: 'GET', path: '/health/ready', tag: 'System', summary: 'Readiness probe: PostgreSQL and (durable mode) the job queue, with latencies; 503 while a dependency is down or the process is draining', access: 'public', success: 200, errors: { 503: 'not ready' } }),
+  r({ method: 'GET', path: '/metrics', tag: 'System', summary: 'Prometheus metrics (text format). Requires Authorization: Bearer METRICS_TOKEN; the route does not exist without one. Counts and latencies only — no ids, no personal data', access: 'token', success: 200, errors: { 401: 'missing or wrong token', 404: 'metrics not configured' } }),
   r({ method: 'GET', path: '/v1/openapi.json', tag: 'System', summary: 'This document', access: 'public', success: 200 }),
 
   r({ method: 'GET', path: '/v1/auth/csrf', tag: 'Authentication', summary: 'Issue a CSRF token (sets cookie)', access: 'public', success: 200 }),
@@ -90,6 +98,12 @@ export const ROUTES: RouteDoc[] = [
   r({ method: 'DELETE', path: '/v1/organizations/{orgId}/roles/{roleId}', tag: 'Roles', summary: 'Delete unused custom role', access: 'organization:roles.manage', success: 204 }),
 
   r({ method: 'GET', path: '/v1/organizations/{orgId}/audit-logs', tag: 'Audit', summary: 'Audit log (cursor paginated, filterable)', access: 'organization:audit.read', query: auditLogQuery, success: 200 }),
+  r({ method: 'GET', path: '/v1/organizations/{orgId}/usage', tag: 'Usage', summary: 'Metered usage of the organization over a UTC period (default 30 days, max 400): counters summed, gauges at their latest daily snapshot, per workspace. Quantities only — no prices, plans or quotas', access: 'organization:billing.manage', query: usageSummaryQuery, success: 200, response: out(usageSummarySchema), errors: { 400: 'invalid period', 429: 'rate limited: 300 per user per hour' } }),
   r({ method: 'GET', path: '/v1/organizations/{orgId}/audit-logs/export', tag: 'Audit', summary: 'Export audit log as CSV (audited)', access: 'organization:audit.export', query: auditLogQuery, success: 200 }),
   ...AUDIENCE_ROUTES,
+  ...CAMPAIGN_ROUTES,
+  ...TEMPLATE_ROUTES,
+  ...UNSUBSCRIBE_ROUTES,
+  ...WEBHOOK_ROUTES,
+  ...SENDER_ROUTES,
 ];

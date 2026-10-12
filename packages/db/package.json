@@ -22,7 +22,7 @@
   "scripts": {
     "generate": "prisma generate",
     "build": "prisma generate && tsc -p tsconfig.json",
-    "typecheck": "prisma generate && tsc -p tsconfig.json --noEmit",
+    "typecheck": "prisma generate && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "bootstrap": "tsx scripts/bootstrap.ts",
     "migrate": "prisma migrate deploy",
     "migrate:test": "tsx scripts/migrate-test.ts",

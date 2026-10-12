@@ -35,8 +35,8 @@ describe('login page', () => {
     document.cookie = 'wk_csrf=t; path=/';
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(json(401, { error: { code: 'invalid_credentials', message: 'Email or password is incorrect', requestId: 'r' } }));
     renderLogin();
-    await userEvent.type(await screen.findByLabelText('Work email'), 'sam@example.com');
-    await userEvent.type(screen.getByLabelText('Password'), 'wrong-password-1');
+    await userEvent.type(await screen.findByLabelText('Work email'), 'sam@example.com', { delay: null });
+    await userEvent.type(screen.getByLabelText('Password'), 'wrong-password-1', { delay: null });
     await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Email or password is incorrect');
     expect(replace).not.toHaveBeenCalled();
@@ -50,8 +50,8 @@ describe('login page', () => {
         : json(200, { user: null }),
     );
     renderLogin();
-    await userEvent.type(await screen.findByLabelText('Work email'), 'sam@example.com');
-    await userEvent.type(screen.getByLabelText('Password'), 'maple-river-lantern');
+    await userEvent.type(await screen.findByLabelText('Work email'), 'sam@example.com', { delay: null });
+    await userEvent.type(screen.getByLabelText('Password'), 'maple-river-lantern', { delay: null });
     await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
     await vi.waitFor(() => expect(replace).toHaveBeenCalledWith('/settings/members'));
   });

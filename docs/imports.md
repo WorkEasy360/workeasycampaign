@@ -94,9 +94,13 @@ contacts between the check and the start; the run's own counts are then authorit
 ## 7. Jobs: inline today, BullMQ-ready
 
 `start` and `retry` dispatch `contacts.import` through `JobDispatcher`. Phase 5 ships `InlineJobDispatcher`, which runs
-the job in the API process after the response; shutdown waits for running jobs. The envelope is the worker's tenant-job
-shape, `{ tenant: { orgId, workspaceId }, actor, correlationId, payload: { importId } }`, built server-side, and the handler
-runs under RLS for that tenant. Moving to the BullMQ worker swaps the dispatcher only.
+the job in the API process after the response; shutdown waits for running jobs. The envelope, built server-side, is
+`{ tenant: { orgId, workspaceId }, actor: { userId, email, displayName }, correlationId, payload: { importId } }`, and the
+handler runs under RLS for that tenant. It has the same outer shape as the worker's tenant-job envelope
+(`apps/worker/src/jobs/tenant-job.ts`) but is **not identical**: the worker envelope carries `actor: { type, id }` and allows a
+null `workspaceId`, while imports need a non-null workspace and the acting user's email and name (for audit and
+notifications). Moving imports to the BullMQ worker therefore needs an envelope adaptation (worker actor + the import
+loading the user details it needs), not only a dispatcher swap (issue P5-7; corrected in milestone 6.2).
 
 **Not yet tested:** Redis/BullMQ execution. Imports have only run in-process.
 

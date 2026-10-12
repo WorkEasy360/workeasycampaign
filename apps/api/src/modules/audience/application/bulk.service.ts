@@ -4,7 +4,7 @@ import type { BulkActionRequest, BulkActionResult, Permission } from '@workeasy/
 import { Errors } from '../../../common/errors.js';
 import type { TenantRequestContext } from '../../../common/request-context.js';
 import { DATABASE } from '../../../infrastructure/providers.js';
-import { inTenant } from '../../tenancy/application/tenant-tx.js';
+import { inTenant, inTenantRetrying } from '../../tenancy/application/tenant-tx.js';
 import { canChangeSubscription } from '../domain/consent.js';
 import { ContactsService } from './contacts.service.js';
 import { addToList, removeFromList, requireList, requireTag, tagContacts, untagContacts } from './lists-tags.service.js';
@@ -60,7 +60,8 @@ export class BulkService {
     let affected = 0;
     for (let i = 0; i < ids.length; i += CHUNK) {
       const chunk = ids.slice(i, i + CHUNK);
-      affected += await inTenant(this.db, ctx, (uow) => this.applyChunk(ctx, uow, req, chunk));
+      // Each chunk is one transaction; a deadlock or serialization failure rolls it back entirely and it is re-run.
+      affected += await inTenantRetrying(this.db, ctx, (uow) => this.applyChunk(ctx, uow, req, chunk));
     }
 
     // 3. One audit record for the whole operation.

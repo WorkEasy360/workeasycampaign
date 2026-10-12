@@ -43,10 +43,16 @@ export default defineConfig({
         DATA_FINGERPRINT_SECRET: 'e2e-fingerprint-e2e-fingerprint-e2e-fp',
         // Uploaded CSVs stay out of the (synced) repository.
         FILE_STORE_DIR: join(tmpdir(), 'workeasy-e2e-files'),
+        // Campaign executions run end to end against the test-only NullDeliveryPort (no I/O). Accepted by config only
+        // because NODE_ENV=test; production refuses it at boot.
+        CAMPAIGN_DELIVERY_MODE: 'test',
+        // Every E2E user registers from 127.0.0.1; the suite registers more than the production default of 10 per IP per hour.
+        // The limit stays active (a configured override, not a bypass); its own behaviour is tested in the API suite.
+        RATE_LIMIT_OVERRIDES: 'auth.register=40',
       },
     },
     {
-      command: 'pnpm --filter @workeasy/web exec next build && pnpm --filter @workeasy/web exec next start --port 3100',
+      command: 'pnpm --filter @workeasy/web exec next build && pnpm --filter @workeasy/web exec next start --port 3100 --keepAliveTimeout 65000',
       cwd: repo,
       url: `${WEB_URL}/login`,
       reuseExistingServer: false,

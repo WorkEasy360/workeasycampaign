@@ -44,10 +44,10 @@ describe('contacts page', () => {
     const calls = api();
     renderAudience(<ContactsPage />, EDITOR);
     await screen.findByText('Asha');
-    await userEvent.type(screen.getByPlaceholderText('Search name, email or phone'), 'a');
+    await userEvent.type(screen.getByPlaceholderText('Search name, email or phone'), 'a', { delay: null });
     await new Promise((r) => setTimeout(r, 400));
     expect(calls.some((c) => c.url.includes('q='))).toBe(false);
-    await userEvent.type(screen.getByPlaceholderText('Search name, email or phone'), 'sh');
+    await userEvent.type(screen.getByPlaceholderText('Search name, email or phone'), 'sh', { delay: null });
     await waitFor(() => expect(calls.some((c) => c.url.includes('q=ash'))).toBe(true));
   });
 
@@ -84,7 +84,7 @@ describe('contacts page', () => {
     renderAudience(<ContactsPage />, EDITOR);
     await userEvent.click(await screen.findByRole('button', { name: /new contact/i }));
     const dialog = await screen.findByRole('dialog');
-    await userEvent.type(within(dialog).getByLabelText('Email'), 'asha@example.com');
+    await userEvent.type(within(dialog).getByLabelText('Email'), 'asha@example.com', { delay: null });
     await userEvent.click(within(dialog).getByRole('button', { name: /create/i }));
     expect(await within(dialog).findByText('Already used by another contact')).toBeInTheDocument();
     expect(push).not.toHaveBeenCalled();

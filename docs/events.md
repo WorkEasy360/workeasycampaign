@@ -113,6 +113,61 @@ workspace configuration, not personal data.
 Not invented: there are no separate `ConsentGranted`/`ConsentRevoked` types — `consent.recorded` with `newState`
 covers both without duplicating the evidence log. Eligibility emits no events (see `docs/eligibility.md`).
 
+## Campaign event contract v1 (Phase 6 — IMPLEMENTED 6.5–6.9; verified in milestone 6.10, 2026-10-08)
+
+Same envelope, storage, ordering and deduplication rules as the audience contract above. Specifics:
+
+- **Aggregate:** `campaign` for every type, so one campaign's history is one keyset query; `versionId` /
+  `executionId` travel in payloads.
+- **Writer:** the campaign command's own transaction (`inTenant(...).event(...)`), i.e. the existing transactional
+  outbox. System transitions (start, complete, fail) use `actor_type = 'system'`, `source = 'campaign_runner'`
+  (new `source` value), and the execution's `correlation_id` (= the request id of the `schedule` command).
+- **Tenancy:** `org_id` and `workspace_id` always set (campaigns are workspace-owned).
+- **Exactly once per fact:** every type below is emitted by a state transition that commits at most once (conditional
+  updates, unique constraints); a no-op command emits nothing.
+- **Privacy:** ids, states, counts, timestamps and changed field *names* only — never names, subjects, body text,
+  audience members, addresses or contact ids.
+
+| Type v1 | Payload | Emitted by |
+|---|---|---|
+| `campaign.created` | `{ channel, clonedFrom: { campaignId, versionId \| null } \| null }` | create, clone |
+| `campaign.updated` | `{ changes: string[] }` — draft paths, e.g. `"audience"`, `"messages[0].content.subject"` | update, restore version into draft (`changes` includes `"restoredFromVersion"`) |
+| `campaign.deleted` / `campaign.restored` | `{}` | delete / restore |
+| `campaign.version_created` | `{ versionId, number, reason, contentHash, schema }` — `schema` is `campaign.version.v1` (historical) or `campaign.version.v2` (written since the content amendment, 2026-10-08; additive enum value) | schedule |
+| `campaign.scheduled` | `{ versionId, executionId, sendAt, mode: 'now' \| 'at' }` | schedule |
+| `campaign.rescheduled` | `{ executionId, from, to }` | reschedule |
+| `campaign.unscheduled` | `{ executionId, versionId }` | unschedule |
+| `campaign.started` | `{ executionId }` | system start (before the audience capture) |
+| `campaign.audience_materialized` | `{ executionId, capturedAt, audienceSize, planned, skipped, skippedByReason: Record<reasonCode, number> }` | system, end of materialization (Eligibility Checkpoint A done) |
+| `campaign.paused` / `campaign.resumed` | `{ executionId, phase: 'materializing' \| 'delivering' }` | pause / resume |
+| `campaign.cancelled` | `{ executionId \| null, stage: 'scheduled' \| 'materializing' \| 'delivering' \| 'paused', counts }` | cancel |
+| `campaign.completed` | `{ executionId, counts: { planned, skipped, sent, failed, cancelled, unknown } }` | system complete |
+| `campaign.failed` | `{ executionId, failureClass: 'configuration', failureCode }` | system start/resume/materialization |
+| `campaign.returned_to_draft` | `{ executionId }` | return to draft |
+
+**Not campaign domain events** (kept in their own stores so the outbox stays low-volume):
+
+| Fact | Store | Phase |
+|---|---|---|
+| Recipient planned / skipped (with reasons) / cancelled | `campaign_recipients` rows | 6 |
+| Recipient queued / sent / failed / unknown / skipped at send, provider message id, attempts | `campaign_recipients` + delivery-attempt records | 8 |
+| Delivered, opened, clicked, bounced, complained, unsubscribed | `engagement_events` (partitioned) | 9 |
+
+"No domain event per recipient" does **not** mean recipient facts are lost: they are stored per recipient as state
+(Phase 6/8) and as engagement events (Phase 9), with recipient ids as the join key.
+
+**Implementation (6.10, MEASURED — `apps/api/test/campaigns-events-audit.test.ts`):** all 16 types registered once
+(v1, aggregate `campaign`, payload = the shared strict schema); every stored event re-validates; commands carry the
+acting user and the request id; runner transitions carry `actor_type = system`, `source = campaign_runner` and the
+scheduling request's correlation id (jobs recovered by the sweep look it up from that execution's
+`campaign.scheduled` event); `started` / `audience_materialized` / `completed` exactly once per execution; PII scan
+of a full lifecycle: no subject, preheader, body, sender name, reply-to, contact address or contact id. RLS: another
+organization sees none; a workspace context sees only its own workspace's events (Phase 5 policy).
+
+**Consumers (planned):** Phase 8 scheduler (`scheduled`, `rescheduled`, `unscheduled`, `cancelled`), notifications,
+Phase 9 analytics (`started`, `audience_materialized`, `completed`), journeys (`completed`), activity feed. No consumer
+exists yet; the dispatcher (`event_dispatches`) arrives with the first consumer.
+
 ## Analytics events (Phase 11 design)
 
 - **Partitioning.** `engagement_events` is range-partitioned by month on `occurred_at`. Indexes:

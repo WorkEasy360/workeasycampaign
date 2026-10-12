@@ -226,6 +226,12 @@ model Workspace {
   topics                 Topic[]
   suppressions           Suppression[]
   imports                ContactImport[]
+  audienceSnapshots      AudienceSnapshot[]
+  audienceCountState     AudienceCountState?
+  audienceCountChunks    AudienceCountSourceChunk[]
+  audienceCountDead      AudienceCountDeadChunk[]
+  campaigns              Campaign[]
+  emailTemplates         EmailTemplate[]
   consentRetentionPolicy ConsentRetentionPolicy?
 
   @@unique([orgId, id])
@@ -416,6 +422,7 @@ model ProviderMessageRoute {
 
   @@id([provider, providerMessageId])
   @@index([orgId, workspaceId])
+  @@index([deliveryId])
   @@map("provider_message_routes")
   @@schema("public")
 }
@@ -452,14 +459,16 @@ model Contact {
   erasedAt              DateTime? @map("erased_at") @db.Timestamptz(3)
   version               Int       @default(1)
 
-  workspace        Workspace                @relation(fields: [orgId, workspaceId], references: [orgId, id], onDelete: Restrict)
-  identities       ContactIdentity[]
-  listMemberships  ListMembership[]
-  tags             ContactTag[]
-  topicPreferences ContactTopicPreference[]
-  consentEvents    ConsentEvent[]
-  consentStates    ConsentState[]
-  suppressions     Suppression[]
+  workspace          Workspace                 @relation(fields: [orgId, workspaceId], references: [orgId, id], onDelete: Restrict)
+  identities         ContactIdentity[]
+  listMemberships    ListMembership[]
+  tags               ContactTag[]
+  topicPreferences   ContactTopicPreference[]
+  consentEvents      ConsentEvent[]
+  consentStates      ConsentState[]
+  suppressions       Suppression[]
+  audienceCountSeq   AudienceCountContactSeq[] // at most one (contact_id is its primary key)
+  campaignRecipients CampaignRecipient[]
 
   @@unique([orgId, workspaceId, id])
   @@index([workspaceId, createdAt(sort: Desc), id(sort: Desc)])
@@ -624,6 +633,7 @@ model Topic {
   parent      Topic?                   @relation("TopicHierarchy", fields: [orgId, workspaceId, parentId], references: [orgId, workspaceId, id], onDelete: Restrict)
   children    Topic[]                  @relation("TopicHierarchy")
   preferences ContactTopicPreference[]
+  campaigns   Campaign[]
 
   @@unique([orgId, workspaceId, id])
   @@unique([workspaceId, key])
@@ -691,22 +701,22 @@ model ConsentEvent {
 
 /// Projection of channel-scoped consent events: current consent per (contact, channel).
 model ConsentState {
-  orgId       String   @map("org_id") @db.Uuid
-  workspaceId String   @map("workspace_id") @db.Uuid
-  contactId   String   @map("contact_id") @db.Uuid
-  channel     String
-  state       String // pending | granted | withdrawn
-  changedBy   String   @map("changed_by") // contact | user | system
-  lawfulBasis String?  @map("lawful_basis")
-  lastEventId String   @map("last_event_id") @db.Uuid
+  orgId              String   @map("org_id") @db.Uuid
+  workspaceId        String   @map("workspace_id") @db.Uuid
+  contactId          String   @map("contact_id") @db.Uuid
+  channel            String
+  state              String // pending | granted | withdrawn
+  changedBy          String   @map("changed_by") // contact | user | system
+  lawfulBasis        String?  @map("lawful_basis")
+  lastEventId        String   @map("last_event_id") @db.Uuid
   /// When the change happened according to the evidence (may be in the past for paper/verbal consent).
-  changedAt   DateTime @map("changed_at") @db.Timestamptz(3)
+  changedAt          DateTime @map("changed_at") @db.Timestamptz(3)
   /// Server time the current state was recorded. Retention and pending expiry are measured from this, never from
   /// the client-supplied changedAt, so backdating cannot make evidence purgeable or a request expire early.
-  recordedAt  DateTime @default(now()) @map("recorded_at") @db.Timestamptz(3)
+  recordedAt         DateTime @default(now()) @map("recorded_at") @db.Timestamptz(3)
   /// Keyed hash of the address the current state applies to (docs/consent.md §Address binding). Consent given for
   /// one address never covers another: eligibility compares it with the current primary address.
-  subjectFingerprint String? @map("subject_fingerprint")
+  subjectFingerprint String?  @map("subject_fingerprint")
 
   contact Contact @relation(fields: [orgId, workspaceId, contactId], references: [orgId, workspaceId, id], onDelete: Restrict)
 
@@ -828,5 +838,423 @@ model ContactImportIssue {
 
   @@index([importId, phase, rowNumber])
   @@map("contact_import_issues")
+  @@schema("public")
+}
+
+// ─── Audience Resolution v1: snapshots (docs/contracts/phase-5-audience.md §9.6; Gate G2, milestone 6.3) ─────────
+// Audience-owned. Ids only — no personal data. CHECK constraints, the partial cleanup index, triggers, RLS, grants
+// and the cleanup discovery function are in the migration's Part B.
+
+/// A point-in-time capture of an audience definition at T0 (`captured_at`). Immutable except the lifecycle columns
+/// released_at / release_reason / purged_at, which go from NULL to a value exactly once.
+model AudienceSnapshot {
+  /// Generated by the capture statement (gen_random_uuid()).
+  id             String    @id @db.Uuid
+  orgId          String    @map("org_id") @db.Uuid
+  workspaceId    String    @map("workspace_id") @db.Uuid
+  /// Caller's idempotency key (Campaigns: the execution id); one capture lifecycle per key and workspace.
+  captureKey     String    @map("capture_key")
+  ownerKind      String    @map("owner_kind") // campaign_execution
+  /// Application-level reference to the owner (no FK across bounded contexts).
+  ownerId        String    @map("owner_id") @db.Uuid
+  /// Canonical definition: selector ids only, sorted.
+  definition     Json
+  definitionHash String    @map("definition_hash")
+  capturedAt     DateTime  @map("captured_at") @db.Timestamptz(3)
+  size           Int
+  releasedAt     DateTime? @map("released_at") @db.Timestamptz(3)
+  releaseReason  String?   @map("release_reason") // materialized | cancelled | failed | orphan_sweep
+  /// Set in the transaction that observes no remaining member (decision A).
+  purgedAt       DateTime? @map("purged_at") @db.Timestamptz(3)
+
+  workspace Workspace                @relation(fields: [orgId, workspaceId], references: [orgId, id], onDelete: Restrict)
+  members   AudienceSnapshotMember[]
+  chunks    AudienceSnapshotChunk[]
+
+  @@unique([workspaceId, captureKey])
+  @@unique([orgId, workspaceId, id])
+  @@map("audience_snapshots")
+  @@schema("public")
+}
+
+/// One captured contact. No FK to contacts (the capture statement selects existing contacts; contacts are never
+/// hard-deleted). Never updated; deleted only by the release purge.
+model AudienceSnapshotMember {
+  orgId       String @map("org_id") @db.Uuid
+  workspaceId String @map("workspace_id") @db.Uuid
+  snapshotId  String @map("snapshot_id") @db.Uuid
+  contactId   String @map("contact_id") @db.Uuid
+
+  snapshot AudienceSnapshot @relation(fields: [orgId, workspaceId, snapshotId], references: [orgId, workspaceId, id], onDelete: Restrict)
+
+  @@id([snapshotId, contactId])
+  @@map("audience_snapshot_members")
+  @@schema("public")
+}
+
+/// Captured members, stored as sorted chunks (decision D2, docs/audit/phase-6.3-performance-remediation.md §5):
+/// chunk k holds positions k·1,000 … k·1,000 + 999 of the snapshot's ascending contact-id order. Written once by the
+/// capture statement, deleted by the release purge, never updated. Replaces one row per member
+/// (`audience_snapshot_members`, no longer written).
+model AudienceSnapshotChunk {
+  orgId        String   @map("org_id") @db.Uuid
+  workspaceId  String   @map("workspace_id") @db.Uuid
+  snapshotId   String   @map("snapshot_id") @db.Uuid
+  chunkNo      Int      @map("chunk_no")
+  firstContact String   @map("first_contact") @db.Uuid
+  lastContact  String   @map("last_contact") @db.Uuid
+  contactIds   String[] @map("contact_ids") @db.Uuid
+
+  snapshot AudienceSnapshot @relation(fields: [orgId, workspaceId, snapshotId], references: [orgId, workspaceId, id], onDelete: Restrict)
+
+  @@id([snapshotId, chunkNo])
+  @@map("audience_snapshot_chunks")
+  @@schema("public")
+}
+
+// ─── Audience count bitmap (Phase 6.3 G2; docs/audit/phase-6.3-bitmap-online-rebuild-readiness.md) ─────────────
+// Audience-owned DERIVED data for the exact membership count. Written only by the triggers and SECURITY DEFINER
+// functions of migration 20261013000000_audience_count_bitmap (Part B: constraints, RLS, grants, sequence, triggers).
+// The application never writes these tables; the runtime role may only read them.
+
+/// Validity of one workspace's bitmap. `count` serves the bitmap ONLY in state `valid`; `invalid` and `rebuilding`
+/// answer with the exact query. `generation` increases on every invalidation and every rebuild start; a rebuild
+/// publishes `valid` only if the generation and its lease token are unchanged (compare-and-set).
+model AudienceCountState {
+  orgId               String    @map("org_id") @db.Uuid
+  workspaceId         String    @id @map("workspace_id") @db.Uuid
+  state               String // valid | invalid | rebuilding
+  generation          BigInt    @default(0)
+  reason              String    @default("")
+  changedAt           DateTime  @default(now()) @map("changed_at") @db.Timestamptz(3)
+  /// Single-rebuilder lease: holder token and expiry. A crashed rebuilder's lease simply expires.
+  rebuildToken        String?   @map("rebuild_token") @db.Uuid
+  rebuildLeaseUntil   DateTime? @map("rebuild_lease_until") @db.Timestamptz(3)
+  lastReconciledAt    DateTime? @map("last_reconciled_at") @db.Timestamptz(3)
+  /// Outcome of the last reconciliation (differences found, duration): auditable, ids-free.
+  lastReconcileResult Json?     @map("last_reconcile_result")
+
+  workspace Workspace @relation(fields: [orgId, workspaceId], references: [orgId, id], onDelete: Restrict)
+
+  @@unique([orgId, workspaceId])
+  @@map("audience_count_state")
+  @@schema("public")
+}
+
+/// Position of a contact in the bitmaps (global sequence; never reused).
+model AudienceCountContactSeq {
+  orgId       String @map("org_id") @db.Uuid
+  workspaceId String @map("workspace_id") @db.Uuid
+  contactId   String @id @map("contact_id") @db.Uuid
+  seq         BigInt @unique
+
+  contact Contact @relation(fields: [orgId, workspaceId, contactId], references: [orgId, workspaceId, id], onDelete: Cascade)
+
+  @@map("audience_count_contact_seq")
+  @@schema("public")
+}
+
+/// Members of one list or tag (`source_id`) within one 4,096-position chunk. All-zero rows are garbage-collected.
+model AudienceCountSourceChunk {
+  orgId       String @map("org_id") @db.Uuid
+  workspaceId String @map("workspace_id") @db.Uuid
+  sourceId    String @map("source_id") @db.Uuid
+  chunk       BigInt
+  bits        String @db.VarBit
+
+  workspace Workspace @relation(fields: [orgId, workspaceId], references: [orgId, id], onDelete: Restrict)
+
+  @@id([workspaceId, sourceId, chunk])
+  @@map("audience_count_source_chunks")
+  @@schema("public")
+}
+
+/// Deleted or erased contacts within one chunk of a workspace.
+model AudienceCountDeadChunk {
+  orgId       String @map("org_id") @db.Uuid
+  workspaceId String @map("workspace_id") @db.Uuid
+  chunk       BigInt
+  bits        String @db.VarBit
+
+  workspace Workspace @relation(fields: [orgId, workspaceId], references: [orgId, id], onDelete: Restrict)
+
+  @@id([workspaceId, chunk])
+  @@map("audience_count_dead_chunks")
+  @@schema("public")
+}
+
+// ─── Campaigns (Phase 6.5; docs/contracts/phase-6-campaign.md §12; approved 2026-10-07) ─────────────────────────
+// Campaign-owned. Workspace-scoped with forced RLS; column-level UPDATE grants; versions insert-only (migration Part B).
+
+/// A workspace-owned, single-channel campaign: the editable draft plus its lifecycle status (a projection of the
+/// current execution, written only by the domain).
+model Campaign {
+  id                 String    @id @default(uuid(7)) @db.Uuid
+  orgId              String    @map("org_id") @db.Uuid
+  workspaceId        String    @map("workspace_id") @db.Uuid
+  name               String
+  description        String    @default("")
+  channel            String // email | sms | whatsapp — never updated
+  purpose            String    @default("marketing")
+  topicId            String?   @map("topic_id") @db.Uuid
+  /// Draft values (contract §4.1: same value types as a version, any field may be incomplete).
+  audience           Json      @default("{\"include\": [], \"exclude\": []}")
+  sender             Json      @default("{\"senderIdentityId\": null, \"fromName\": null, \"replyTo\": null}")
+  messages           Json      @default("[]")
+  schedule           Json      @default("{\"mode\": \"now\", \"sendAt\": null, \"timezone\": \"UTC\"}")
+  status             String    @default("draft")
+  currentVersionId   String?   @map("current_version_id") @db.Uuid
+  currentExecutionId String?   @map("current_execution_id") @db.Uuid
+  clonedFromId       String?   @map("cloned_from_id") @db.Uuid
+  createdByUserId    String?   @map("created_by_user_id") @db.Uuid
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+  deletedAt          DateTime? @map("deleted_at") @db.Timestamptz(3)
+  version            Int       @default(1)
+
+  workspace        Workspace           @relation(fields: [orgId, workspaceId], references: [orgId, id], onDelete: Restrict)
+  topic            Topic?              @relation(fields: [orgId, workspaceId, topicId], references: [orgId, workspaceId, id], onDelete: Restrict)
+  clonedFrom       Campaign?           @relation("CampaignClones", fields: [orgId, workspaceId, clonedFromId], references: [orgId, workspaceId, id], onDelete: Restrict)
+  clones           Campaign[]          @relation("CampaignClones")
+  /// The current pointers must belong to THIS campaign (composite key with the campaign id).
+  currentVersion   CampaignVersion?    @relation("CampaignCurrentVersion", fields: [id, currentVersionId], references: [campaignId, id], onDelete: Restrict, onUpdate: Restrict)
+  currentExecution CampaignExecution?  @relation("CampaignCurrentExecution", fields: [id, currentExecutionId], references: [campaignId, id], onDelete: Restrict, onUpdate: Restrict)
+  versions         CampaignVersion[]   @relation("CampaignVersions")
+  executions       CampaignExecution[] @relation("CampaignExecutions")
+
+  @@unique([orgId, workspaceId, id])
+  @@index([workspaceId, status, updatedAt(sort: Desc), id(sort: Desc)])
+  @@index([workspaceId, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@map("campaigns")
+  @@schema("public")
+}
+
+/// Immutable snapshot of a committed draft (contract §4). Insert-only: no UPDATE grant, UPDATE rejected by trigger.
+model CampaignVersion {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  orgId           String   @map("org_id") @db.Uuid
+  workspaceId     String   @map("workspace_id") @db.Uuid
+  campaignId      String   @map("campaign_id") @db.Uuid
+  number          Int
+  schema          String
+  snapshot        Json
+  contentHash     String   @map("content_hash")
+  reason          String
+  createdByUserId String?  @map("created_by_user_id") @db.Uuid
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  campaign   Campaign            @relation("CampaignVersions", fields: [orgId, workspaceId, campaignId], references: [orgId, workspaceId, id], onDelete: Restrict)
+  currentOf  Campaign[]          @relation("CampaignCurrentVersion")
+  executions CampaignExecution[]
+
+  @@unique([campaignId, number])
+  @@unique([campaignId, id])
+  @@unique([orgId, workspaceId, id])
+  @@map("campaign_versions")
+  @@schema("public")
+}
+
+/// One run of one version (contract §5). Phase 6.5–6.8 create `pending` executions only; processing is 6.9 (Gate G3).
+model CampaignExecution {
+  id                    String    @id @default(uuid(7)) @db.Uuid
+  orgId                 String    @map("org_id") @db.Uuid
+  workspaceId           String    @map("workspace_id") @db.Uuid
+  campaignId            String    @map("campaign_id") @db.Uuid
+  versionId             String    @map("version_id") @db.Uuid
+  runNumber             Int       @map("run_number")
+  runKind               String    @default("one_time") @map("run_kind")
+  status                String    @default("pending")
+  pausedPhase           String?   @map("paused_phase")
+  sendAt                DateTime  @map("send_at") @db.Timestamptz(3)
+  /// Optional per-run sending limit (Phase 7.11): at most this many hand-offs per hour. NULL = no campaign limit.
+  maxPerHour            Int?      @map("max_per_hour")
+  startedAt             DateTime? @map("started_at") @db.Timestamptz(3)
+  /// Opaque reference to an Audience-owned snapshot: no foreign key across bounded contexts.
+  audienceSnapshotId    String?   @map("audience_snapshot_id") @db.Uuid
+  capturedAt            DateTime? @map("captured_at") @db.Timestamptz(3)
+  audienceSize          Int?      @map("audience_size")
+  materializationCursor String?   @map("materialization_cursor")
+  snapshotReleasedAt    DateTime? @map("snapshot_released_at") @db.Timestamptz(3)
+  materializedAt        DateTime? @map("materialized_at") @db.Timestamptz(3)
+  completedAt           DateTime? @map("completed_at") @db.Timestamptz(3)
+  cancelledAt           DateTime? @map("cancelled_at") @db.Timestamptz(3)
+  planned               Int       @default(0)
+  skipped               Int       @default(0)
+  sent                  Int       @default(0)
+  failed                Int       @default(0)
+  cancelled             Int       @default(0)
+  unknown               Int       @default(0)
+  skippedByReason       Json      @default("{}") @map("skipped_by_reason")
+  failureClass          String?   @map("failure_class")
+  failureCode           String?   @map("failure_code")
+  health                String    @default("ok")
+  lastProgressAt        DateTime? @map("last_progress_at") @db.Timestamptz(3)
+  leaseOwner            String?   @map("lease_owner")
+  leaseUntil            DateTime? @map("lease_until") @db.Timestamptz(3)
+  initiatedByUserId     String?   @map("initiated_by_user_id") @db.Uuid
+  pausedByUserId        String?   @map("paused_by_user_id") @db.Uuid
+  cancelledByUserId     String?   @map("cancelled_by_user_id") @db.Uuid
+  version               Int       @default(1)
+
+  campaign        Campaign            @relation("CampaignExecutions", fields: [orgId, workspaceId, campaignId], references: [orgId, workspaceId, id], onDelete: Restrict)
+  /// The version must belong to the same campaign.
+  campaignVersion CampaignVersion     @relation(fields: [campaignId, versionId], references: [campaignId, id], onDelete: Restrict, onUpdate: Restrict)
+  currentOf       Campaign[]          @relation("CampaignCurrentExecution")
+  recipients      CampaignRecipient[]
+
+  @@unique([campaignId, runNumber])
+  @@unique([campaignId, id])
+  @@unique([orgId, workspaceId, id])
+  @@index([workspaceId, status, sendAt])
+  @@map("campaign_executions")
+  @@schema("public")
+}
+
+/// One contact selected by one execution (contract §7). Written by materialization (6.9); none are created before.
+model CampaignRecipient {
+  id                String    @id @default(uuid(7)) @db.Uuid
+  orgId             String    @map("org_id") @db.Uuid
+  workspaceId       String    @map("workspace_id") @db.Uuid
+  executionId       String    @map("execution_id") @db.Uuid
+  contactId         String    @map("contact_id") @db.Uuid
+  addressIdentityId String?   @map("address_identity_id") @db.Uuid
+  status            String
+  reasonCodes       String[]  @default([]) @map("reason_codes")
+  failureCode       String?   @map("failure_code")
+  attempts          Int       @default(0)
+  leaseOwner        String?   @map("lease_owner")
+  leaseUntil        DateTime? @map("lease_until") @db.Timestamptz(3)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+  finalAt           DateTime? @map("final_at") @db.Timestamptz(3)
+
+  execution CampaignExecution @relation(fields: [orgId, workspaceId, executionId], references: [orgId, workspaceId, id], onDelete: Restrict)
+  contact   Contact           @relation(fields: [orgId, workspaceId, contactId], references: [orgId, workspaceId, id], onDelete: Restrict)
+
+  @@unique([executionId, contactId])
+  @@index([executionId, status, id])
+  @@index([workspaceId, contactId, createdAt(sort: Desc)])
+  @@map("campaign_recipients")
+  @@schema("public")
+}
+
+/// Reusable email.content.v2 content (docs/contracts/phase-6-content-amendment.md §6). Applying a template copies it.
+model EmailTemplate {
+  id              String    @id @default(uuid(7)) @db.Uuid
+  orgId           String    @map("org_id") @db.Uuid
+  workspaceId     String    @map("workspace_id") @db.Uuid
+  name            String
+  /// Lower-cased name while not deleted, NULL once deleted: case-insensitive uniqueness of live templates.
+  nameKey         String?   @map("name_key")
+  description     String    @default("")
+  /// Free-text category (1–60 characters) for filtering; null = uncategorized.
+  category        String?
+  /// email.content.v2, validated by the application on write and read.
+  content         Json
+  createdByUserId String?   @map("created_by_user_id") @db.Uuid
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+  deletedAt       DateTime? @map("deleted_at") @db.Timestamptz(3)
+  version         Int       @default(1)
+
+  workspace Workspace @relation(fields: [orgId, workspaceId], references: [orgId, id], onDelete: Restrict)
+
+  @@unique([orgId, workspaceId, id])
+  @@unique([workspaceId, nameKey])
+  @@index([workspaceId, updatedAt(sort: Desc), id(sort: Desc)])
+  @@map("email_templates")
+  @@schema("public")
+}
+
+/// Immutable history of a template (Phase 7.1): its state after every create, update and restore, keyed by the
+/// template's optimistic-lock version. Insert-only (no UPDATE/DELETE grant; UPDATE rejected by trigger).
+model EmailTemplateVersion {
+  id                  String   @id @default(uuid(7)) @db.Uuid
+  orgId               String   @map("org_id") @db.Uuid
+  workspaceId         String   @map("workspace_id") @db.Uuid
+  templateId          String   @map("template_id") @db.Uuid
+  version             Int
+  /// created | updated | restored | imported
+  change              String
+  restoredFromVersion Int?     @map("restored_from_version")
+  name                String
+  description         String
+  category            String?
+  content             Json
+  createdByUserId     String?  @map("created_by_user_id") @db.Uuid
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@unique([templateId, version])
+  @@index([workspaceId, templateId, version(sort: Desc)], map: "email_template_versions_workspace_template_idx")
+  @@map("email_template_versions")
+  @@schema("public")
+}
+
+/// Reusable saved blocks (Phase 7.2): { schema: "email.snippet.v1", blocks: email.content.v3 blocks }. Inserting copies.
+model EmailSnippet {
+  id              String    @id @default(uuid(7)) @db.Uuid
+  orgId           String    @map("org_id") @db.Uuid
+  workspaceId     String    @map("workspace_id") @db.Uuid
+  name            String
+  nameKey         String?   @map("name_key")
+  content         Json
+  createdByUserId String?   @map("created_by_user_id") @db.Uuid
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+  deletedAt       DateTime? @map("deleted_at") @db.Timestamptz(3)
+  version         Int       @default(1)
+
+  @@unique([orgId, workspaceId, id])
+  @@unique([workspaceId, nameKey])
+  @@index([workspaceId, updatedAt(sort: Desc), id(sort: Desc)])
+  @@map("email_snippets")
+  @@schema("public")
+}
+
+/// Sending domains (Phase 7.8b): verified only from recorded DNS checks.
+model SendingDomain {
+  id                String    @id @default(uuid(7)) @db.Uuid
+  orgId             String    @map("org_id") @db.Uuid
+  workspaceId       String    @map("workspace_id") @db.Uuid
+  domain            String
+  domainKey         String?   @map("domain_key")
+  verificationToken String    @map("verification_token")
+  status            String    @default("pending")
+  checks            Json      @default("{}")
+  checkedAt         DateTime? @map("checked_at") @db.Timestamptz(3)
+  verifiedAt        DateTime? @map("verified_at") @db.Timestamptz(3)
+  createdByUserId   String?   @map("created_by_user_id") @db.Uuid
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+  deletedAt         DateTime? @map("deleted_at") @db.Timestamptz(3)
+  version           Int       @default(1)
+
+  @@unique([orgId, workspaceId, id])
+  @@unique([workspaceId, domainKey])
+  @@map("sending_domains")
+  @@schema("public")
+}
+
+/// Sender identities (Phase 7.8b): a from address on a sending domain of the workspace.
+model SenderIdentity {
+  id              String    @id @default(uuid(7)) @db.Uuid
+  orgId           String    @map("org_id") @db.Uuid
+  workspaceId     String    @map("workspace_id") @db.Uuid
+  domainId        String    @map("domain_id") @db.Uuid
+  localPart       String    @map("local_part")
+  addressKey      String?   @map("address_key")
+  displayName     String    @map("display_name")
+  replyTo         String?   @map("reply_to")
+  createdByUserId String?   @map("created_by_user_id") @db.Uuid
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+  deletedAt       DateTime? @map("deleted_at") @db.Timestamptz(3)
+  version         Int       @default(1)
+
+  @@unique([orgId, workspaceId, id])
+  @@unique([workspaceId, addressKey])
+  @@index([workspaceId, domainId], map: "sender_identities_domain_idx")
+  @@map("sender_identities")
   @@schema("public")
 }

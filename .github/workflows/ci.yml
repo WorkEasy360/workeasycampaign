@@ -1,0 +1,74 @@
+# Workeasy Campaigns — release gate (Gate C in CI). Mirrors the local regression: boundaries, typecheck, build, every
+# test suite against PostgreSQL 16, the E2E suite (Playwright + axe), and a dependency audit.
+# STATUS: written 2026-10-09; NOT RUN yet (the repository has no remote CI runner configured). The database passwords
+# below are throwaway values for the disposable CI service container — never production credentials.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_ENV: test
+  DATABASE_ADMIN_URL: postgresql://postgres:ci-admin-pw@localhost:5432/postgres
+  DATABASE_OWNER_URL: postgresql://workeasy_owner:ci-owner-pw@localhost:5432/workeasy
+  DATABASE_URL: postgresql://workeasy_app:ci-app-pw@localhost:5432/workeasy
+  IDENTITY_DATABASE_URL: postgresql://workeasy_identity:ci-identity-pw@localhost:5432/workeasy
+  REPORTING_DATABASE_URL: postgresql://workeasy_reporting:ci-reporting-pw@localhost:5432/workeasy
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci-admin-pw
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.8.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Dependency audit (production)
+        run: pnpm audit --prod
+      - name: Package boundaries
+        run: pnpm lint:boundaries
+      - name: Database bootstrap and migrations (from an empty database)
+        run: |
+          pnpm db:bootstrap
+          pnpm --filter @workeasy/db migrate:test
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Build
+        run: pnpm build
+      - name: Tests (db, packages, api, web, worker)
+        run: pnpm test
+      - name: Forbid focused tests
+        run: "! grep -rnE '\\b(it|test|describe)\\.only\\(' apps packages --include=*.ts --include=*.tsx --exclude-dir=node_modules"
+      - name: Install Playwright browser
+        run: pnpm --filter @workeasy/e2e exec playwright install --with-deps chromium
+      - name: End-to-end (incl. accessibility)
+        run: pnpm --filter @workeasy/e2e test
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-results
+          path: apps/e2e/test-results
+          retention-days: 7

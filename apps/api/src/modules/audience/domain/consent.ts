@@ -1,13 +1,11 @@
+import type { ChannelState, StoredChannelState } from '@workeasy/audience-core';
 import type { ConsentAction } from '@workeasy/shared';
 
 /**
  * Consent state machines (docs/consent.md). Pure: given the current projection and a requested action, decide the
  * new state or refuse. The caller appends the immutable event and updates the projection in one transaction.
+ * The read-side states (stored / effective, effectiveChannelState) live in @workeasy/audience-core.
  */
-/** Stored channel states. */
-export type StoredChannelState = 'none' | 'pending' | 'granted' | 'withdrawn';
-/** Effective state: a stored `pending` older than the workspace's pending-expiry period is `expired` (derived). */
-export type ChannelState = StoredChannelState | 'expired';
 export type TopicState = 'none' | 'subscribed' | 'unsubscribed';
 export type ActorType = 'contact' | 'user' | 'system' | 'api_key';
 /** Who last changed a projection (as stored): contact | user | system. */
@@ -18,17 +16,6 @@ export type Transition<S> =
   | { ok: false; code: 'SELF_UNSUBSCRIBED' | 'INVALID_TRANSITION' | 'NO_CHANGE'; message: string };
 
 export const changedByOf = (actor: ActorType): ChangedBy => (actor === 'api_key' ? 'user' : actor);
-
-/**
- * Pending consent expires [OUR_ORIGINAL_DESIGN]: a double opt-in request not confirmed within the workspace's
- * `pending_expiry_days` (measured from the SERVER time it was recorded) is `expired`. Derived on read — no job rewrites
- * anything — so it is exact at every moment and needs no scheduler. An expired request never qualifies a contact and
- * can no longer be confirmed; a new request or a new grant starts over.
- */
-export function effectiveChannelState(stored: StoredChannelState, recordedAt: Date | null, pendingExpiryDays: number, now: Date = new Date()): ChannelState {
-  if (stored === 'pending' && recordedAt && now.getTime() - recordedAt.getTime() > pendingExpiryDays * 86_400_000) return 'expired';
-  return stored;
-}
 
 /**
  * Channel consent.

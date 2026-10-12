@@ -1,4 +1,4 @@
-import type { ApiErrorBody, ApiErrorCode } from '@workeasy/shared';
+import type { ApiErrorBody, ApiErrorCode, ReadinessFinding } from '@workeasy/shared';
 
 /** Error thrown for every non-2xx API response, carrying the server's stable code and field errors. */
 export class ApiError extends Error {
@@ -8,6 +8,10 @@ export class ApiError extends Error {
     message: string,
     readonly fields: Record<string, string[]> = {},
     readonly requestId?: string,
+    /** PREFLIGHT_FAILED / PREFLIGHT_UNAVAILABLE: the blocking findings (never personal data). */
+    readonly findings: ReadinessFinding[] = [],
+    /** Seconds from a Retry-After header (retryable responses such as PREFLIGHT_UNAVAILABLE). */
+    readonly retryAfter: number | null = null,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -81,7 +85,8 @@ export async function api<T = unknown>(method: string, path: string, opts: Reque
     await refreshCsrf();
     return api<T>(method, path, opts, true);
   }
-  throw new ApiError(res.status, err?.code ?? 'internal_error', err?.message ?? 'Something went wrong', err?.fields, err?.requestId);
+  const retryAfter = Number(res.headers.get('retry-after'));
+  throw new ApiError(res.status, err?.code ?? 'internal_error', err?.message ?? 'Something went wrong', err?.fields, err?.requestId, err?.findings ?? [], Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : null);
 }
 
 export const http = {

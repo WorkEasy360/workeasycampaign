@@ -2,10 +2,10 @@ import { Inject, Injectable } from '@nestjs/common';
 import { type Database, isUniqueViolation, type Tx } from '@workeasy/db';
 import type { ListView, TagView } from '@workeasy/shared';
 import { Errors } from '../../../common/errors.js';
-import { decodeCursor, encodeCursor } from '../../../common/pagination.js';
+import { cursorScope, decodeCursor, encodeCursor } from '../../../common/pagination.js';
 import type { TenantRequestContext } from '../../../common/request-context.js';
 import { DATABASE } from '../../../infrastructure/providers.js';
-import { inTenant, type TenantUnitOfWork } from '../../tenancy/application/tenant-tx.js';
+import { inTenant, inTenantRetrying, type TenantUnitOfWork } from '../../tenancy/application/tenant-tx.js';
 
 const nameKey = (name: string) => name.trim().toLowerCase();
 
@@ -17,12 +17,19 @@ export async function liveContactIds(tx: Tx, ids: string[]): Promise<string[]> {
   return rows.map((r) => r.id);
 }
 
+/**
+ * Membership writes insert rows in ascending contact-id order. Two concurrent multi-row inserts into the same list (or
+ * tag) with overlapping contacts then meet in the same order on the unique index and one simply waits, instead of the
+ * two forming a deadlock cycle (measured: docs/audit/phase-6.3-bitmap-online-rebuild-readiness.md §6).
+ */
+const ascending = (ids: string[]) => [...new Set(ids)].sort();
+
 /** Membership changes shared by the lists API, bulk actions and imports. Return how many actually changed. */
 export async function addToList(uow: TenantUnitOfWork, orgId: string, workspaceId: string, listId: string, contactIds: string[], source: 'manual' | 'bulk' | 'import' | 'api', userId: string | null): Promise<number> {
   const { tx } = uow;
   const existing = await tx.listMembership.findMany({ where: { listId, contactId: { in: contactIds } }, select: { contactId: true } });
   const have = new Set(existing.map((e) => e.contactId));
-  const added = contactIds.filter((id) => !have.has(id));
+  const added = ascending(contactIds).filter((id) => !have.has(id));
   if (!added.length) return 0;
   await tx.listMembership.createMany({ data: added.map((contactId) => ({ orgId, workspaceId, listId, contactId, source, addedByUserId: userId })), skipDuplicates: true });
   await uow.events('list.member_added', added.map((contactId) => ({ aggregateId: contactId, payload: { listId, source } })));
@@ -32,7 +39,7 @@ export async function addToList(uow: TenantUnitOfWork, orgId: string, workspaceI
 export async function removeFromList(uow: TenantUnitOfWork, listId: string, contactIds: string[]): Promise<number> {
   const existing = await uow.tx.listMembership.findMany({ where: { listId, contactId: { in: contactIds } }, select: { contactId: true } });
   if (!existing.length) return 0;
-  await uow.tx.listMembership.deleteMany({ where: { listId, contactId: { in: existing.map((e) => e.contactId) } } });
+  await uow.tx.listMembership.deleteMany({ where: { listId, contactId: { in: ascending(existing.map((e) => e.contactId)) } } });
   await uow.events('list.member_removed', existing.map((e) => ({ aggregateId: e.contactId, payload: { listId } })));
   return existing.length;
 }
@@ -40,7 +47,7 @@ export async function removeFromList(uow: TenantUnitOfWork, listId: string, cont
 export async function tagContacts(uow: TenantUnitOfWork, orgId: string, workspaceId: string, tagId: string, contactIds: string[], userId: string | null): Promise<number> {
   const existing = await uow.tx.contactTag.findMany({ where: { tagId, contactId: { in: contactIds } }, select: { contactId: true } });
   const have = new Set(existing.map((e) => e.contactId));
-  const added = contactIds.filter((id) => !have.has(id));
+  const added = ascending(contactIds).filter((id) => !have.has(id));
   if (!added.length) return 0;
   await uow.tx.contactTag.createMany({ data: added.map((contactId) => ({ orgId, workspaceId, tagId, contactId, taggedByUserId: userId })), skipDuplicates: true });
   await uow.events('contact.tagged', added.map((contactId) => ({ aggregateId: contactId, payload: { tagId } })));
@@ -50,7 +57,7 @@ export async function tagContacts(uow: TenantUnitOfWork, orgId: string, workspac
 export async function untagContacts(uow: TenantUnitOfWork, tagId: string, contactIds: string[]): Promise<number> {
   const existing = await uow.tx.contactTag.findMany({ where: { tagId, contactId: { in: contactIds } }, select: { contactId: true } });
   if (!existing.length) return 0;
-  await uow.tx.contactTag.deleteMany({ where: { tagId, contactId: { in: existing.map((e) => e.contactId) } } });
+  await uow.tx.contactTag.deleteMany({ where: { tagId, contactId: { in: ascending(existing.map((e) => e.contactId)) } } });
   await uow.events('contact.untagged', existing.map((e) => ({ aggregateId: e.contactId, payload: { tagId } })));
   return existing.length;
 }
@@ -74,7 +81,8 @@ export class ListsService {
 
   async list(ctx: TenantRequestContext, q: { q?: string; status: 'active' | 'archived' | 'all'; limit: number; cursor?: string }) {
     return inTenant(this.db, ctx, async ({ tx }) => {
-      const c = decodeCursor(q.cursor);
+      const scope = cursorScope(ctx.access, 'lists', { ...q });
+      const c = decodeCursor(q.cursor, scope);
       const rows = await tx.contactList.findMany({
         where: {
           deletedAt: null,
@@ -90,7 +98,7 @@ export class ListsService {
       const last = page.at(-1);
       return {
         data: page.map((l) => this.view(l, counts.get(l.id) ?? 0)),
-        nextCursor: rows.length > q.limit && last ? encodeCursor({ t: last.createdAt.toISOString(), id: last.id }) : null,
+        nextCursor: rows.length > q.limit && last ? encodeCursor({ t: last.createdAt.toISOString(), id: last.id }, scope) : null,
       };
     });
   }
@@ -158,7 +166,7 @@ export class ListsService {
 
   /** Soft delete: the list disappears and its memberships are removed (contacts are untouched). */
   async delete(ctx: TenantRequestContext, listId: string): Promise<void> {
-    await inTenant(this.db, ctx, async ({ tx, event }) => {
+    await inTenantRetrying(this.db, ctx, async ({ tx, event }) => {
       await requireList(tx, listId);
       const removed = await tx.listMembership.deleteMany({ where: { listId } });
       await tx.contactList.update({ where: { id: listId }, data: { deletedAt: new Date(), nameKey: null, updatedAt: new Date(), version: { increment: 1 } } });
@@ -167,7 +175,7 @@ export class ListsService {
   }
 
   async addMembers(ctx: TenantRequestContext, listId: string, contactIds: string[]) {
-    return inTenant(this.db, ctx, async (uow) => {
+    return inTenantRetrying(this.db, ctx, async (uow) => {
       await requireList(uow.tx, listId, { writable: true });
       const ids = await liveContactIds(uow.tx, contactIds);
       const added = await addToList(uow, ctx.access.orgId, ctx.access.workspaceId!, listId, ids, 'manual', ctx.principal.userId);
@@ -176,7 +184,7 @@ export class ListsService {
   }
 
   async removeMembers(ctx: TenantRequestContext, listId: string, contactIds: string[]) {
-    return inTenant(this.db, ctx, async (uow) => {
+    return inTenantRetrying(this.db, ctx, async (uow) => {
       await requireList(uow.tx, listId, { writable: true });
       const removed = await removeFromList(uow, listId, [...new Set(contactIds)]);
       return { removed };
@@ -263,7 +271,7 @@ export class TagsService {
   }
 
   async delete(ctx: TenantRequestContext, tagId: string): Promise<void> {
-    await inTenant(this.db, ctx, async ({ tx, event }) => {
+    await inTenantRetrying(this.db, ctx, async ({ tx, event }) => {
       await requireTag(tx, tagId);
       const removed = await tx.contactTag.deleteMany({ where: { tagId } });
       await tx.tag.update({ where: { id: tagId }, data: { deletedAt: new Date(), nameKey: null, updatedAt: new Date(), version: { increment: 1 } } });
@@ -272,7 +280,7 @@ export class TagsService {
   }
 
   async tag(ctx: TenantRequestContext, tagId: string, contactIds: string[]) {
-    return inTenant(this.db, ctx, async (uow) => {
+    return inTenantRetrying(this.db, ctx, async (uow) => {
       await requireTag(uow.tx, tagId);
       const ids = await liveContactIds(uow.tx, contactIds);
       return { tagged: await tagContacts(uow, ctx.access.orgId, ctx.access.workspaceId!, tagId, ids, ctx.principal.userId) };
@@ -280,7 +288,7 @@ export class TagsService {
   }
 
   async untag(ctx: TenantRequestContext, tagId: string, contactIds: string[]) {
-    return inTenant(this.db, ctx, async (uow) => {
+    return inTenantRetrying(this.db, ctx, async (uow) => {
       await requireTag(uow.tx, tagId);
       return { untagged: await untagContacts(uow, tagId, [...new Set(contactIds)]) };
     });

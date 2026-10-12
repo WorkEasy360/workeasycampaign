@@ -44,7 +44,7 @@ export class AuthenticationGuard implements CanActivate {
       }
     }
 
-    if (policy.kind === 'public') return true;
+    if (policy.kind === 'public' || policy.kind === 'token') return true;
     if (!req.principal) throw Errors.unauthenticated();
     return true;
   }

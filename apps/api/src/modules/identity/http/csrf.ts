@@ -40,6 +40,9 @@ export class CsrfGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     const req = context.switchToHttp().getRequest<FastifyRequest>();
     if (SAFE_METHODS.has(req.method)) return true;
+    // Token-authorized routes ignore session cookies entirely (common/access.ts): nothing for CSRF to protect.
+    const routePolicy = this.reflector.getAllAndOverride<AccessPolicy | undefined>(ACCESS_POLICY, [context.getHandler(), context.getClass()]);
+    if (routePolicy?.kind === 'token') return true;
 
     const origin = req.headers.origin;
     if (origin && origin !== this.config.appOrigin) throw Errors.csrf();

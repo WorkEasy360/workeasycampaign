@@ -1,8 +1,9 @@
 'use client';
 
-import { BarChart3, CheckCircle2, Circle, GitBranch, Mail, ShieldCheck, Users } from 'lucide-react';
+import { BarChart3, CheckCircle2, Circle, GitBranch, Mail, ShieldCheck } from 'lucide-react';
 import Link from 'next/link';
 import type { ReactNode } from 'react';
+import { CampaignResults } from '@/components/campaigns/campaign-results';
 import { Badge, Card, EmptyState, PageHeader } from '@/components/ui';
 import { useAppContext, useCan } from '@/lib/session';
 
@@ -15,6 +16,8 @@ export default function DashboardPage() {
     { done: true, label: 'Create your organization', detail: `${ctx.organization!.name} is ready.`, show: true },
     { done: !!ctx.workspace, label: 'Open a workspace', detail: ctx.workspace ? `You are in ${ctx.workspace.name}.` : 'Choose or create a workspace.', href: '/workspaces', show: true },
     { done: false, label: 'Invite your team', detail: 'Add colleagues and choose what each person can do.', href: '/settings/members', show: can('members.invite') },
+    { done: false, label: 'Add your contacts', detail: 'Import a file or add contacts, then group them in lists.', href: '/contacts', show: !!ctx.workspace && can('contacts.read') },
+    { done: false, label: 'Prepare your first campaign', detail: 'Write a message, choose an audience and review it before sending.', href: '/campaigns', show: !!ctx.workspace && can('campaigns.create') },
     { done: false, label: 'Review security', detail: 'Check active sessions and your password.', href: '/settings/security', show: true },
   ];
 
@@ -56,12 +59,15 @@ export default function DashboardPage() {
         </Card>
       </div>
 
+      <div className="mt-6">
+        <CampaignResults />
+      </div>
+
       <h2 className="mb-3 mt-10 text-sm font-semibold uppercase tracking-wide text-ink-faint">Coming next</h2>
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Upcoming icon={<Users className="size-6" />} title="Contacts">Import and organise your audience with lists, segments and consent.</Upcoming>
-        <Upcoming icon={<Mail className="size-6" />} title="Campaigns">Email, SMS and WhatsApp campaigns with pre-send checks.</Upcoming>
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <Upcoming icon={<Mail className="size-6" />} title="SMS and WhatsApp">Campaigns on more channels, with the same pre-send checks as email.</Upcoming>
         <Upcoming icon={<GitBranch className="size-6" />} title="Journeys">Automated multi-step customer journeys.</Upcoming>
-        <Upcoming icon={<BarChart3 className="size-6" />} title="Reports">Engagement and deliverability insights with next steps.</Upcoming>
+        <Upcoming icon={<BarChart3 className="size-6" />} title="Engagement reports">Opens, clicks and deliverability, once real delivery and tracking are enabled.</Upcoming>
       </div>
     </>
   );

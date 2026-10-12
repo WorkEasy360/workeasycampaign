@@ -25,7 +25,8 @@ Email, SMS and WhatsApp are delivery channels behind one adapter contract. No bu
 | Runtime | Node 24 LTS, TypeScript 6.0, ESM everywhere |
 | Web | Next.js 16 (App Router), React 19.3, Tailwind 4, TanStack Query |
 | API | NestJS 11 on Fastify 5 |
-| Worker | NestJS standalone + BullMQ 5 (ioredis 5) |
+| Background jobs | Durable PostgreSQL job queue (claim with SKIP LOCKED, leases + heartbeats, back-off, dead letters) run by any process with the `jobs` role; decision record `docs/architecture/durable-job-queue.md` (2026-10-09, supersedes BullMQ for jobs) |
+| Worker | the API image with `PROCESS_ROLES=jobs,scheduler` (no HTTP). `apps/worker` keeps the Audience count maintenance job |
 | Database | PostgreSQL 16 via Prisma 7.10 (driver adapter `pg`) with forced row-level security |
 | Contracts | Zod 4 schemas in `packages/shared`, used by both API and UI |
 | Tests | Vitest 5 (unit / database / API / worker / components), Playwright (E2E) |
@@ -80,7 +81,7 @@ Other Workeasy products ─▶ public API (Phase 15) and integration events only
 
 Shared infrastructure added in Phase 5:
 - **`FileStore`** (`apps/api/src/infrastructure/files`): streaming save with a byte limit, server-generated keys confined to `FILE_STORE_DIR`. Local disk today; S3/MinIO behind the same interface later.
-- **`JobDispatcher`** (`apps/api/src/common/jobs.ts`): `InlineJobDispatcher` runs jobs in-process after the response, and shutdown waits for them. Jobs use the worker's tenant-job envelope, so moving them to BullMQ changes only the dispatcher. Redis/BullMQ execution is not yet exercised.
+- **`JobDispatcher`** (`apps/api/src/common/jobs.ts`): `PgJobDispatcher` enqueues into the durable PostgreSQL queue (`JOB_QUEUE=postgres`, required in production) and `PgJobRunner` runs it; `InlineJobDispatcher` runs jobs in-process (tests, single-process development). Envelopes carry ids only. See `docs/architecture/durable-job-queue.md`.
 - **Search** goes through `app.search_contact_ids()`, a workspace-bound definer function, because PostgreSQL will not use a trigram index for a non-leakproof `ILIKE` under RLS (`docs/audience.md` §7).
 
 **Rule: the API never sends messages; the worker sends.** The API depends on `packages/channels` only for verifying
@@ -197,4 +198,4 @@ Details are in `docs/audit/foundation-audit.md` §10.
 |---|---|
 | Database | PostgreSQL 16 via `scripts/local-postgres.ps1` (no Docker or admin needed) or `docker compose`. `pnpm db:bootstrap` then `pnpm db:migrate`. |
 | Mail | Development mail goes to `.dev-mail/` (JSON with the action link) |
-| Redis | Optional in development (in-memory rate limits); required in production |
+| Redis | Rate limits only: optional in development (in-memory), required in production. Not used for jobs |

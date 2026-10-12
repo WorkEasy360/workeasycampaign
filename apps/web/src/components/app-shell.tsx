@@ -6,6 +6,7 @@ import {
   BarChart3,
   Check,
   ChevronsUpDown,
+  FileText,
   GitBranch,
   LayoutDashboard,
   LogOut,
@@ -28,7 +29,8 @@ import { useContextSafe } from './use-context-safe';
 const NAV: { href: string; label: string; icon: typeof Users; soon?: boolean; match?: string[] }[] = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/contacts', label: 'Audience', icon: Users, match: ['/contacts', '/audience', '/imports'] },
-  { href: '#campaigns', label: 'Campaigns', icon: Mail, soon: true },
+  { href: '/campaigns', label: 'Campaigns', icon: Mail },
+  { href: '/templates', label: 'Templates', icon: FileText },
   { href: '#journeys', label: 'Journeys', icon: GitBranch, soon: true },
   { href: '#reports', label: 'Reports', icon: BarChart3, soon: true },
   { href: '/settings', label: 'Settings', icon: Settings },
