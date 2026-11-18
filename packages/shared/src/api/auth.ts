@@ -44,6 +44,8 @@ export interface SessionUser {
   email: string;
   displayName: string;
   emailVerified: boolean;
+  /** How this session was opened: an email and password, or WorkEasy360 Accounts (docs/workeasy360-sso.md). */
+  signInMethod?: 'password' | 'workeasy360';
 }
 
 export interface SessionSummary {

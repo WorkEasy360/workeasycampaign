@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, Inject, Post, Req, Res } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Inject, Post, Query, Req, Res } from '@nestjs/common';
 import {
   forgotPasswordRequest,
   loginRequest,
@@ -14,6 +14,7 @@ import { type RequestMeta, Meta, UserCtx, type UserRequestContext } from '../../
 import { parse } from '../../../common/validation.js';
 import type { AppConfig } from '../../../config/env.js';
 import { APP_CONFIG } from '../../../infrastructure/providers.js';
+import { Errors } from '../../../common/errors.js';
 import { AuthenticationService } from '../application/authentication.service.js';
 import { SessionService } from '../application/session.service.js';
 import type { AuthenticatedPrincipal } from '../domain/principal.js';
@@ -28,6 +29,7 @@ export const toSessionUser = (p: AuthenticatedPrincipal): SessionUser => ({
   email: p.email,
   displayName: p.displayName,
   emailVerified: p.emailVerified,
+  signInMethod: p.provider === 'workeasy360' ? 'workeasy360' : 'password',
 });
 
 @Controller('v1/auth')
@@ -60,6 +62,7 @@ export class AuthController {
   @Public()
   @RateLimit({ name: 'auth.login', by: 'ip', limit: 20, windowSeconds: 60 })
   async login(@Body() body: unknown, @Meta() meta: RequestMeta, @Res({ passthrough: true }) reply: FastifyReply) {
+    this.passwordsAllowed();
     const input = parse(loginRequest, body);
     const { token, principal } = await this.auth.authenticate({ kind: 'password', ...input }, meta);
     setSessionCookie(reply, this.config, token);
@@ -71,8 +74,9 @@ export class AuthController {
   @Post('logout')
   @HttpCode(200)
   @Authenticated()
-  async logout(@UserCtx() ctx: UserRequestContext, @Res({ passthrough: true }) reply: FastifyReply) {
-    const { redirectUrl } = await this.auth.logout(ctx.principal, ctx.meta);
+  async logout(@UserCtx() ctx: UserRequestContext, @Query('workeasy360') workeasy360: string | undefined, @Res({ passthrough: true }) reply: FastifyReply) {
+    // ?workeasy360=true: "Sign out of WorkEasy360 too" (WorkEasy360 sessions only); otherwise this product's session only.
+    const { redirectUrl } = await this.auth.logout(ctx.principal, ctx.meta, { workeasy360: workeasy360 === 'true' || workeasy360 === '1' });
     clearSessionCookie(reply, this.config);
     const csrfToken = issueCsrfToken(this.config.sessionSecret, null);
     setCsrfCookie(reply, this.config, csrfToken);
@@ -84,6 +88,7 @@ export class AuthController {
   @Public()
   @RateLimit({ name: 'auth.register', by: 'ip', limit: 10, windowSeconds: 3600 })
   async register(@Body() body: unknown, @Meta() meta: RequestMeta) {
+    this.passwordsAllowed();
     await this.local.register(parse(registerRequest, body), meta);
     return ACCEPTED;
   }
@@ -93,6 +98,7 @@ export class AuthController {
   @Public()
   @RateLimit({ name: 'auth.verify', by: 'ip', limit: 30, windowSeconds: 3600 })
   async verifyEmail(@Body() body: unknown, @Meta() meta: RequestMeta) {
+    this.passwordsAllowed();
     await this.local.verifyEmail(parse(verifyEmailRequest, body).token, meta);
     return { status: 'verified' };
   }
@@ -102,6 +108,7 @@ export class AuthController {
   @Public()
   @RateLimit({ name: 'auth.resend', by: 'ip', limit: 10, windowSeconds: 3600 })
   async resend(@Body() body: unknown, @Meta() meta: RequestMeta) {
+    this.passwordsAllowed();
     await this.local.resendVerification(parse(resendVerificationRequest, body).email, meta);
     return ACCEPTED;
   }
@@ -111,6 +118,7 @@ export class AuthController {
   @Public()
   @RateLimit({ name: 'auth.forgot', by: 'ip', limit: 10, windowSeconds: 3600 })
   async forgot(@Body() body: unknown, @Meta() meta: RequestMeta) {
+    this.passwordsAllowed();
     await this.local.requestPasswordReset(parse(forgotPasswordRequest, body).email, meta);
     return ACCEPTED;
   }
@@ -120,11 +128,17 @@ export class AuthController {
   @Public()
   @RateLimit({ name: 'auth.reset', by: 'ip', limit: 20, windowSeconds: 3600 })
   async reset(@Body() body: unknown, @Meta() meta: RequestMeta, @Res({ passthrough: true }) reply: FastifyReply) {
+    this.passwordsAllowed();
     const input = parse(resetPasswordRequest, body);
     const userId = await this.local.resetPassword(input.token, input.password, meta);
     // A reset means the old password may be compromised: end every session, including this browser's.
     await this.sessions.revokeAll(userId, 'password_reset');
     clearSessionCookie(reply, this.config);
     return { status: 'password_reset' };
+  }
+
+  /** WORKEASY360_SSO_ONLY: password sign-in, registration and recovery are off (docs/workeasy360-sso.md). */
+  private passwordsAllowed(): void {
+    if (this.config.workeasy360?.ssoOnly) throw Errors.passwordSignInDisabled();
   }
 }

@@ -16,7 +16,7 @@ export interface RouteDoc {
   /** Route-specific error statuses worth knowing, beyond the generic 400/401/403/404 (status → meaning). */
   errors?: Record<number, string>;
   /** Raw request media type instead of a JSON body (e.g. CSV uploads). */
-  requestContentType?: 'text/csv';
+  requestContentType?: 'text/csv' | 'application/x-www-form-urlencoded';
   /** Non-JSON success body (e.g. CSV downloads). */
   responseContentType?: 'text/csv';
 }

@@ -40,7 +40,7 @@ export class OrganizationsController {
   @Get()
   @Authenticated()
   async list(@UserCtx() ctx: UserRequestContext) {
-    return { data: await this.orgs.listMine(ctx.principal.userId) };
+    return { data: await this.orgs.listMine(ctx.principal.userId, ctx.principal.workeasy360?.boundOrgId ?? null) };
   }
 
   @Post()

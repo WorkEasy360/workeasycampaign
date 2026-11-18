@@ -8,6 +8,7 @@ Multi-tenant customer engagement and marketing automation: email, SMS and WhatsA
 | [docs/architecture.md](docs/architecture.md) | System as built, boundaries, request pipeline |
 | [docs/tenancy.md](docs/tenancy.md) | Organization/workspace ownership, RLS, RBAC |
 | [docs/identity.md](docs/identity.md) | Identity-provider abstraction, local auth, sessions, CSRF |
+| [docs/workeasy360-sso.md](docs/workeasy360-sso.md) | Sign-in with WorkEasy360 Accounts: OIDC, entitlement, back-channel logout, operator commands |
 | [docs/events.md](docs/events.md) | Domain / integration / analytics events |
 | [docs/security.md](docs/security.md) | Database privileges, controls, known gaps |
 | [docs/api/openapi.json](docs/api/openapi.json) | API reference (also served at `/api/v1/openapi.json`) |

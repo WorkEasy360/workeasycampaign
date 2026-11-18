@@ -34,9 +34,14 @@ export class AuthenticationGuard implements CanActivate {
     const reply = context.switchToHttp().getResponse<FastifyReply>();
     const token = req.cookies[this.config.cookies.sessionName];
 
+    let refusedBySsoOnly = false;
     if (token) {
       const verified = await this.auth.verifySession(token, requestMeta(req));
-      if (verified) {
+      if (verified && this.config.workeasy360?.ssoOnly && verified.principal.provider !== 'workeasy360') {
+        // WORKEASY360_SSO_ONLY: a session opened any other way is refused at once, on every instance. It is not revoked,
+        // so switching SSO-only off again restores it.
+        refusedBySsoOnly = true;
+      } else if (verified) {
         req.principal = verified.principal;
         if (verified.rotatedToken) setSessionCookie(reply, this.config, verified.rotatedToken);
       } else {
@@ -45,7 +50,7 @@ export class AuthenticationGuard implements CanActivate {
     }
 
     if (policy.kind === 'public' || policy.kind === 'token') return true;
-    if (!req.principal) throw Errors.unauthenticated();
+    if (!req.principal) throw refusedBySsoOnly ? Errors.workeasy360SignInRequired() : Errors.unauthenticated();
     return true;
   }
 }

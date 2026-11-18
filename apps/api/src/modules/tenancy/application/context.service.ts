@@ -44,7 +44,13 @@ export class ContextService {
 
     let org: AccessContext | null = orgId ? await this.access.organization(ctx.principal, orgId) : null;
     if (!org && strict) throw Errors.notFound('Organization');
-    if (!org) {
+    // A WorkEasy360 session has exactly one organization: never fall back to another.
+    const bound = ctx.principal.workeasy360?.boundOrgId;
+    if (!org && bound) {
+      org = await this.access.organization(ctx.principal, bound);
+      wsId = null;
+    }
+    if (!org && !bound) {
       // Fall back to the first organization the user belongs to.
       const first = await this.db.asUser(ctx.principal.userId, (tx) =>
         tx.organizationMembership.findFirst({

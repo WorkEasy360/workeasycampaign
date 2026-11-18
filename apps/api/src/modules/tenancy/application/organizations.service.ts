@@ -32,11 +32,14 @@ export const toWorkspaceView = (w: {
 export class OrganizationsService {
   constructor(@Inject(DATABASE) private readonly db: Database) {}
 
-  /** Organizations the caller is an active member of (RLS: own memberships only). */
-  async listMine(userId: string): Promise<OrganizationView[]> {
+  /**
+   * Organizations the caller is an active member of (RLS: own memberships only). A WorkEasy360 session sees only the
+   * organization it is bound to (`onlyOrgId`).
+   */
+  async listMine(userId: string, onlyOrgId: string | null = null): Promise<OrganizationView[]> {
     const rows = await this.db.asUser(userId, (tx) =>
       tx.organizationMembership.findMany({
-        where: { userId, status: 'active', organization: { status: 'active' } },
+        where: { userId, status: 'active', organization: { status: 'active' }, ...(onlyOrgId ? { orgId: onlyOrgId } : {}) },
         select: {
           organization: { select: { id: true, name: true, slug: true, version: true } },
           role: { select: { id: true, name: true } },
@@ -51,7 +54,14 @@ export class OrganizationsService {
    * Register → verify → create organization → first workspace → owner + workspace admin.
    * One transaction: the organization never exists without its roles, owner and first workspace.
    */
-  async create(ctx: UserRequestContext, input: CreateOrganizationRequest) {
+  async create(
+    ctx: UserRequestContext,
+    input: CreateOrganizationRequest,
+    /** A first WorkEasy360 sign-in: the WorkEasy360 organization this one belongs to (docs/workeasy360-sso.md). */
+    options: { workeasy360OrganizationId?: string } = {},
+  ) {
+    // A WorkEasy360 session works in its own organization only: organizations come from WorkEasy360.
+    if (ctx.principal.workeasy360) throw Errors.workeasy360OrganizationManaged();
     if (!ctx.principal.emailVerified) throw Errors.emailNotVerified();
     const slug = await this.pickSlug(input.slug, input.name);
     const orgId = uuidv7();
@@ -65,7 +75,7 @@ export class OrganizationsService {
     try {
       created = await inTenant(this.db, tctx, async ({ tx, audit, event }) => {
         const org = await tx.organization.create({
-          data: { id: orgId, name: input.name, slug, createdByUserId: ctx.principal.userId },
+          data: { id: orgId, name: input.name, slug, createdByUserId: ctx.principal.userId, workeasy360OrganizationId: options.workeasy360OrganizationId ?? null },
         });
         const roleIds = new Map<string, string>();
         await tx.role.createMany({
@@ -85,7 +95,7 @@ export class OrganizationsService {
           data: { orgId, workspaceId, userId: ctx.principal.userId, roleId: wsAdminRoleId },
         });
 
-        await audit({ action: 'organization.created', targetType: 'organization', targetId: orgId, metadata: { name: org.name, slug } });
+        await audit({ action: 'organization.created', targetType: 'organization', targetId: orgId, metadata: { name: org.name, slug, ...(options.workeasy360OrganizationId ? { workeasy360OrganizationId: options.workeasy360OrganizationId } : {}) } });
         await audit({ action: 'workspace.created', workspaceId, targetType: 'workspace', targetId: workspaceId, metadata: { name: workspace.name } });
         await event('organization.created', orgId, { name: org.name, slug, ownerUserId: ctx.principal.userId });
         await event('membership.added', orgId, { userId: ctx.principal.userId, roleId: ownerRoleId, via: 'creation' });

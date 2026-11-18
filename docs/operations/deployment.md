@@ -68,6 +68,8 @@ The API refuses to boot in production when something required is missing or unsa
 | `DELIVERY_RATE_PER_SECOND`, `WORKSPACE_SEND_RATE_PER_SECOND` | campaign worker | provider account limit; per-workspace fair share |
 | `METRICS_TOKEN` | API, campaign worker | bearer token for `/metrics`; unset = no endpoint |
 | `RATE_LIMIT_OVERRIDES` | API | e.g. an office behind one NAT |
+| `WORKEASY360_ISSUER`, `WORKEASY360_CLIENT_ID`, `WORKEASY360_KEY_ID`, `WORKEASY360_PRIVATE_KEY_FILE`, `WORKEASY360_SSO_ONLY` and the other `WORKEASY360_*` settings | API | Sign-in with WorkEasy360 Accounts ([docs/workeasy360-sso.md](../workeasy360-sso.md)). All four of issuer, client id, key id and key file, or none. The private key file is a secret, mounted read-only from the secrets manager. Hostname: `campaign.workeasy360.com` |
+| `WORKEASY360_SIGN_IN` | web | `on` or `only`: the sign-in page offers "Continue with WorkEasy360" |
 
 Secrets are never logged: logs are built from allowlists (docs/operations/observability.md §1).
 

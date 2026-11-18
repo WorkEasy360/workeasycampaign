@@ -16,7 +16,7 @@ export const DOMAIN_EVENTS = {
   'workspace.updated': { version: 1, aggregate: 'workspace', payload: z.object({ changes: z.array(z.string()) }) },
   'workspace.archived': { version: 1, aggregate: 'workspace', payload: z.object({}) },
   'workspace.restored': { version: 1, aggregate: 'workspace', payload: z.object({}) },
-  'membership.added': { version: 1, aggregate: 'organization_membership', payload: z.object({ userId: id, roleId: id, via: z.enum(['creation', 'invitation']) }) },
+  'membership.added': { version: 1, aggregate: 'organization_membership', payload: z.object({ userId: id, roleId: id, via: z.enum(['creation', 'invitation', 'workeasy360']) }) },
   'membership.role_changed': { version: 1, aggregate: 'organization_membership', payload: z.object({ userId: id, fromRoleId: id, toRoleId: id }) },
   'membership.status_changed': { version: 1, aggregate: 'organization_membership', payload: z.object({ userId: id, from: z.string(), to: z.string() }) },
   'workspace_membership.added': { version: 1, aggregate: 'workspace_membership', payload: z.object({ userId: id, roleId: id }) },

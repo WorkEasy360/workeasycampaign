@@ -9,6 +9,7 @@ import { loadConfig } from '../src/config/env.js';
 import type { MailMessage, Mailer } from '../src/infrastructure/mail/mailer.js';
 import { MemoryRateLimitStore, type RateLimitStore } from '../src/common/rate-limit.js';
 import type { JobDispatcher } from '../src/common/jobs.js';
+import type { Workeasy360RuntimeOptions } from '../src/modules/workeasy360/runtime.js';
 
 /** Records dispatched jobs instead of running them (command-layer tests). */
 export class RecordingJobDispatcher implements JobDispatcher {
@@ -55,7 +56,7 @@ export const APP_ORIGIN = 'http://localhost:3000';
  * Test app. `jobDispatcher` replaces the in-process job runner (e.g. a RecordingJobDispatcher to test commands without
  * running the background work they dispatch).
  */
-export async function startTestApp(env: Record<string, string> = {}, opts: { jobDispatcher?: JobDispatcher; dnsResolver?: DnsResolver; deliveryAdapter?: ChannelAdapter & { provider?: string }; smsAdapter?: ChannelAdapter & { provider?: string }; whatsappAdapter?: ChannelAdapter & { provider?: string }; rateLimitStore?: RateLimitStore } = {}): Promise<TestApp> {
+export async function startTestApp(env: Record<string, string> = {}, opts: { jobDispatcher?: JobDispatcher; dnsResolver?: DnsResolver; deliveryAdapter?: ChannelAdapter & { provider?: string }; smsAdapter?: ChannelAdapter & { provider?: string }; whatsappAdapter?: ChannelAdapter & { provider?: string }; rateLimitStore?: RateLimitStore; workeasy360?: Workeasy360RuntimeOptions } = {}): Promise<TestApp> {
   const urls = testDatabaseUrls();
   const config = loadConfig({
     NODE_ENV: 'test',
@@ -69,7 +70,7 @@ export async function startTestApp(env: Record<string, string> = {}, opts: { job
     ...env,
   });
   const mailer = new CapturingMailer();
-  const app = await createApp(config, { mailer, rateLimitStore: opts.rateLimitStore ?? new MemoryRateLimitStore(), ...(opts.jobDispatcher ? { jobDispatcher: opts.jobDispatcher } : {}), ...(opts.dnsResolver ? { dnsResolver: opts.dnsResolver } : {}), ...(opts.deliveryAdapter ? { deliveryAdapter: opts.deliveryAdapter } : {}), ...(opts.smsAdapter ? { smsAdapter: opts.smsAdapter } : {}), ...(opts.whatsappAdapter ? { whatsappAdapter: opts.whatsappAdapter } : {}) });
+  const app = await createApp(config, { mailer, rateLimitStore: opts.rateLimitStore ?? new MemoryRateLimitStore(), ...(opts.jobDispatcher ? { jobDispatcher: opts.jobDispatcher } : {}), ...(opts.dnsResolver ? { dnsResolver: opts.dnsResolver } : {}), ...(opts.deliveryAdapter ? { deliveryAdapter: opts.deliveryAdapter } : {}), ...(opts.smsAdapter ? { smsAdapter: opts.smsAdapter } : {}), ...(opts.whatsappAdapter ? { whatsappAdapter: opts.whatsappAdapter } : {}), ...(opts.workeasy360 ? { workeasy360: opts.workeasy360 } : {}) });
   await app.init();
   await app.getHttpAdapter().getInstance().ready();
   return { app, mailer, close: () => app.close() };
