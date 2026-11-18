@@ -17,6 +17,10 @@
     "./testing": {
       "types": "./dist/testing.d.ts",
       "default": "./dist/testing.js"
+    },
+    "./operator": {
+      "types": "./dist/workeasy360-operator.d.ts",
+      "default": "./dist/workeasy360-operator.js"
     }
   },
   "scripts": {
@@ -26,7 +30,8 @@
     "bootstrap": "tsx scripts/bootstrap.ts",
     "migrate": "prisma migrate deploy",
     "migrate:test": "tsx scripts/migrate-test.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "workeasy360": "node dist/workeasy360-cli.js"
   },
   "devDependencies": {
     "@types/node": "24.19.0",

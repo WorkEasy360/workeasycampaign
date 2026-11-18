@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { WORKEASY360_RUNTIME, type Workeasy360Runtime } from '../../workeasy360/runtime.js';
 import type { Database } from '@workeasy/db';
 import { isUniqueViolation } from '@workeasy/db';
 import { Errors } from '../../../common/errors.js';
@@ -23,6 +24,7 @@ export class AuthenticationService {
     @Inject(IDENTITY_PROVIDER) private readonly provider: IdentityProvider,
     @Inject(DATABASE) private readonly db: Database,
     private readonly sessions: SessionService,
+    @Inject(WORKEASY360_RUNTIME) private readonly workeasy360: Workeasy360Runtime | null,
   ) {}
 
   async authenticate(credentials: Credentials, meta: RequestMeta) {
@@ -67,7 +69,9 @@ export class AuthenticationService {
   async verifySession(token: string, meta: RequestMeta): Promise<VerifiedSession | null> {
     const verified = await this.sessions.verify(token, meta);
     if (!verified) return null;
-    if (verified.refreshDue) {
+    // A WorkEasy360 session has no local account to re-check: WorkEasy360 answers for it through back-channel logout
+    // and the entitlement question (with the person's subject) in AccessGuard.
+    if (verified.refreshDue && verified.principal.provider !== 'workeasy360') {
       const stillValid = await this.provider.refresh(verified.principal).catch((err: unknown) => {
         this.logger.warn(`identity refresh failed: ${String(err)}`);
         return true; // provider outage must not log everyone out; a definitive "no" does
@@ -84,7 +88,23 @@ export class AuthenticationService {
     return (await this.verifySession(token, meta))?.principal ?? null;
   }
 
-  async logout(principal: AuthenticatedPrincipal, meta: RequestMeta): Promise<{ redirectUrl: string | null }> {
+  /**
+   * Ends this session (the product's sign-out). With `workeasy360` for a WorkEasy360 session, also returns WorkEasy360's
+   * end_session_endpoint (id_token_hint, client_id, registered post-logout URI) for the browser: "Sign out of
+   * WorkEasy360 too". WorkEasy360 asks the person to confirm.
+   */
+  async logout(principal: AuthenticatedPrincipal, meta: RequestMeta, options: { workeasy360?: boolean } = {}): Promise<{ redirectUrl: string | null }> {
+    let endSession: string | null = null;
+    if (options.workeasy360 && principal.workeasy360 && this.workeasy360) {
+      const idToken = await this.sessions.workeasy360IdToken(principal.userId, principal.sessionId);
+      const url = await this.workeasy360.client
+        .endSessionUrl({ idTokenHint: idToken ?? undefined, postLogoutRedirectUri: this.workeasy360.settings.postLogoutRedirectUri })
+        .catch((err: unknown) => {
+          this.logger.warn(`workeasy360 end_session_endpoint unavailable: ${err instanceof Error ? err.name : 'unknown'}`);
+          return undefined;
+        });
+      endSession = url?.toString() ?? null;
+    }
     await this.sessions.revoke(principal.userId, principal.sessionId, 'logout');
     await this.db.system.recordSecurityEvent({
       userId: principal.userId,
@@ -92,8 +112,9 @@ export class AuthenticationService {
       ipAddress: meta.ipAddress,
       userAgent: meta.userAgent,
       correlationId: meta.requestId,
-      metadata: { sessionId: principal.sessionId },
+      metadata: { sessionId: principal.sessionId, ...(endSession ? { workeasy360SignOut: true } : {}) },
     });
+    if (principal.provider === 'workeasy360') return { redirectUrl: endSession };
     return this.provider.logout(principal);
   }
 }

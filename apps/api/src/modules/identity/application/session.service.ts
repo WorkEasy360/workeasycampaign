@@ -4,7 +4,7 @@ import type { SessionSummary } from '@workeasy/shared';
 import type { RequestMeta } from '../../../common/request-context.js';
 import { DATABASE } from '../../../infrastructure/providers.js';
 import { hashToken, newToken } from '../../../infrastructure/tokens.js';
-import type { AuthenticatedPrincipal } from '../domain/principal.js';
+import type { AuthenticatedPrincipal, Workeasy360Binding } from '../domain/principal.js';
 
 /** Session lifetime policy (docs/identity.md §Sessions). */
 export const SESSION_POLICY = {
@@ -39,6 +39,8 @@ export class SessionService {
     provider: string,
     authMethods: string[],
     meta: RequestMeta,
+    /** WorkEasy360 sessions only: the binding recorded with the session (never changed afterwards). */
+    workeasy360?: Workeasy360Binding & { idToken: string },
   ): Promise<{ token: string; sessionId: string }> {
     const token = newToken();
     const now = Date.now();
@@ -54,6 +56,16 @@ export class SessionService {
           absoluteExpiresAt: new Date(now + SESSION_POLICY.absoluteSeconds * 1000),
           ipAddress: meta.ipAddress,
           userAgent: meta.userAgent,
+          ...(workeasy360
+            ? {
+                workeasy360Issuer: workeasy360.issuer,
+                workeasy360Subject: workeasy360.subject,
+                workeasy360Sid: workeasy360.sid,
+                workeasy360OrganizationId: workeasy360.organizationId,
+                boundOrgId: workeasy360.boundOrgId,
+                workeasy360IdToken: workeasy360.idToken,
+              }
+            : {}),
         },
       });
     });
@@ -84,6 +96,7 @@ export class SessionService {
       sessionId: s.sessionId,
       provider: s.provider,
       authMethods: s.authMethods,
+      workeasy360: s.workeasy360,
     };
 
     let rotatedToken: string | null = null;
@@ -170,6 +183,12 @@ export class SessionService {
       ipAddress: s.ipAddress,
       userAgent: s.userAgent,
     }));
+  }
+
+  /** The ID token of a WorkEasy360 session (id_token_hint for "Sign out of WorkEasy360 too"), or null. */
+  async workeasy360IdToken(userId: string, sessionId: string): Promise<string | null> {
+    const s = await this.db.asUser(userId, (tx) => tx.session.findUnique({ where: { id: sessionId }, select: { workeasy360IdToken: true } }));
+    return s?.workeasy360IdToken ?? null;
   }
 
   async rememberContext(userId: string, sessionId: string, orgId: string | null, workspaceId: string | null) {

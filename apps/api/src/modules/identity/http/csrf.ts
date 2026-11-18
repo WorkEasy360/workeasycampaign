@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { type CanActivate, type ExecutionContext, Inject, Injectable } from '@nestjs/common';
+import { type CanActivate, type ExecutionContext, Inject, Injectable, SetMetadata } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import type { FastifyRequest } from 'fastify';
 import { ACCESS_POLICY, type AccessPolicy } from '../../../common/access.js';
@@ -10,6 +10,14 @@ import { hmac, safeEqual } from '../../../infrastructure/tokens.js';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 export const CSRF_HEADER = 'x-csrf-token';
+
+const SKIP_CSRF = 'workeasy:skip-csrf';
+/**
+ * For server-to-server POSTs whose only authority is a signature in the body, never a cookie (the WorkEasy360
+ * back-channel logout receiver): no browser session is involved, so there is nothing for CSRF to protect. The handler
+ * must verify the signature before doing anything.
+ */
+export const SkipCsrf = () => SetMetadata(SKIP_CSRF, true);
 
 /**
  * Signed double-submit CSRF token (OWASP CSRF Prevention Cheat Sheet), bound to the session:
@@ -43,6 +51,7 @@ export class CsrfGuard implements CanActivate {
     // Token-authorized routes ignore session cookies entirely (common/access.ts): nothing for CSRF to protect.
     const routePolicy = this.reflector.getAllAndOverride<AccessPolicy | undefined>(ACCESS_POLICY, [context.getHandler(), context.getClass()]);
     if (routePolicy?.kind === 'token') return true;
+    if (this.reflector.getAllAndOverride<boolean | undefined>(SKIP_CSRF, [context.getHandler(), context.getClass()])) return true;
 
     const origin = req.headers.origin;
     if (origin && origin !== this.config.appOrigin) throw Errors.csrf();

@@ -10,6 +10,9 @@ export interface ApiErrorBody {
     fields?: Record<string, string[]>;
     /** Only with PREFLIGHT_FAILED / PREFLIGHT_UNAVAILABLE: the blocking pre-flight findings (never personal data). */
     findings?: ReadinessFinding[];
+    /** Only with WORKEASY360_ACCESS_ENDED: the platform's entitlement reason (not_entitled, expired, suspended,
+     * membership_inactive, no_seat). */
+    reason?: string;
     requestId: string;
   };
 }
@@ -44,6 +47,19 @@ export const API_ERROR_CODES = [
   'TEST_SEND_FAILED',
   // Gate D/G: a required shared dependency (the rate-limit store) is unreachable; retry later (503 + Retry-After).
   'service_unavailable',
+  // WorkEasy360 Accounts sign-in (docs/workeasy360-sso.md).
+  // 401: WORKEASY360_SSO_ONLY is on and this session was not opened with WorkEasy360.
+  'workeasy360_sign_in_required',
+  // 403: WORKEASY360_SSO_ONLY is on: password sign-in, registration and password reset are off.
+  'password_sign_in_disabled',
+  // 403: WorkEasy360 says this organization (or person) may no longer use the product; `reason` says why.
+  'workeasy360_access_ended',
+  // 403: the organization's subscription is read-only: reads work, changes do not.
+  'workeasy360_read_only',
+  // 403: WorkEasy360 refused this product's own client (revoked credential, suspended integration): access cannot be confirmed.
+  'workeasy360_access_unverified',
+  // 403: a WorkEasy360 session works in its own organization only; organizations come from WorkEasy360.
+  'workeasy360_organization_managed',
 ] as const;
 export type ApiErrorCode = (typeof API_ERROR_CODES)[number];
 

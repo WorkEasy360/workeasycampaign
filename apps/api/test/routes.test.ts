@@ -45,7 +45,7 @@ describe('route inventory', () => {
     const anonymous = new Agent(t);
     for (const route of ROUTES.filter((r) => r.access === 'public' && r.method === 'GET')) {
       const res = await anonymous.get(toConcrete(route.path));
-      expect(res.status, route.path).toBe(200);
+      expect(res.status, route.path).toBe(route.success);
     }
   });
 

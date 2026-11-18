@@ -17,4 +17,19 @@ export interface AuthenticatedPrincipal {
   provider: string;
   /** How the person authenticated, e.g. ["pwd"] or ["pwd", "otp"]. Enables step-up checks once MFA exists. */
   authMethods: string[];
+  /**
+   * Set for a WorkEasy360 session (provider "workeasy360", docs/workeasy360-sso.md): who signed in, and the ONE
+   * organization this session may use (`boundOrgId`). Absent or null for every other session.
+   */
+  workeasy360?: Workeasy360Binding | null;
+}
+
+export interface Workeasy360Binding {
+  issuer: string;
+  subject: string;
+  sid: string | null;
+  /** The WorkEasy360 organization the ID token named. */
+  organizationId: string;
+  /** The organization here linked to it: the only one this session may use. */
+  boundOrgId: string;
 }

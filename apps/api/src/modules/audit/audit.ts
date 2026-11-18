@@ -19,6 +19,7 @@ export type AuditAction =
   | 'member.suspended'
   | 'member.reactivated'
   | 'member.removed'
+  | 'member.joined_via_workeasy360'
   | 'workspace_member.added'
   | 'workspace_member.role_changed'
   | 'workspace_member.removed'

@@ -107,6 +107,9 @@ model UserIdentity {
   userId     String    @map("user_id") @db.Uuid
   provider   String
   subject    String
+  /// WorkEasy360 Accounts identities only (provider "workeasy360"): the issuer `subject` belongs to. People are linked
+  /// on (issuer, subject); an issuer move is an explicit operator step (docs/workeasy360-sso.md).
+  issuer     String?
   createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   lastUsedAt DateTime? @map("last_used_at") @db.Timestamptz(3)
 
@@ -139,10 +142,23 @@ model Session {
   userAgent               String?   @map("user_agent")
   lastOrganizationId      String?   @map("last_organization_id") @db.Uuid
   lastWorkspaceId         String?   @map("last_workspace_id") @db.Uuid
+  /// WorkEasy360 sessions (provider "workeasy360"): who signed in, under which issuer, and the provider's sign-in id
+  /// (`sid`), so a back-channel logout token can end exactly the sessions it names.
+  workeasy360Issuer         String? @map("workeasy360_issuer")
+  workeasy360Subject        String? @map("workeasy360_subject")
+  workeasy360Sid            String? @map("workeasy360_sid")
+  /// The WorkEasy360 organization the ID token named.
+  workeasy360OrganizationId String? @map("workeasy360_organization_id") @db.Uuid
+  /// The one Campaign organization this session may use (the one linked to workeasy360OrganizationId).
+  boundOrgId                String? @map("bound_org_id") @db.Uuid
+  /// The ID token, kept only as id_token_hint for "Sign out of WorkEasy360 too".
+  workeasy360IdToken        String? @map("workeasy360_id_token")
 
   user User @relation(fields: [userId], references: [id], onDelete: Restrict)
 
   @@index([userId, revokedAt])
+  @@index([workeasy360Issuer, workeasy360Subject])
+  @@index([workeasy360Issuer, workeasy360Sid])
   @@map("sessions")
   @@schema("public")
 }
@@ -192,6 +208,9 @@ model Organization {
   updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
   deletedAt       DateTime? @map("deleted_at") @db.Timestamptz(3)
   version         Int       @default(1)
+  /// The WorkEasy360 organization this organization belongs to (created by its first WorkEasy360 sign-in, or linked by
+  /// an operator). Sign-ins naming that organization land here and nowhere else. Not updatable by the runtime role.
+  workeasy360OrganizationId String? @unique @map("workeasy360_organization_id") @db.Uuid
 
   workspaces  Workspace[]
   roles       Role[]
@@ -199,6 +218,51 @@ model Organization {
   invitations Invitation[]
 
   @@map("organizations")
+  @@schema("public")
+}
+
+// ───────────────────────────── WorkEasy360 Accounts sign-in (docs/workeasy360-sso.md) ─────────────────────────────
+// Platform tables: no tenant column, no runtime-role privileges. Reached only through SECURITY DEFINER functions.
+
+/// A pending sign-in: state, nonce and PKCE verifier, kept server-side and taken (deleted) once by the callback.
+model Workeasy360LoginFlow {
+  /// SHA-256 of the random flow id the browser holds in an httpOnly cookie.
+  idHash           String   @id @map("id_hash")
+  state            String
+  nonce            String
+  codeVerifier     String   @map("code_verifier")
+  organizationHint String?  @map("organization_hint") @db.Uuid
+  returnTo         String?  @map("return_to")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  expiresAt        DateTime @map("expires_at") @db.Timestamptz(3)
+
+  @@index([expiresAt])
+  @@map("workeasy360_login_flows")
+  @@schema("public")
+}
+
+/// The platform's last entitlement answers, shared by every API instance (keyed by organization, or organization +
+/// hashed subject). A denial is kept without expiry so neither a restart nor an outage hands access back.
+model Workeasy360EntitlementAnswer {
+  key       String    @id
+  value     String
+  updatedAt DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+  expiresAt DateTime? @map("expires_at") @db.Timestamptz(3)
+
+  @@map("workeasy360_entitlement_answers")
+  @@schema("public")
+}
+
+/// Back-channel logout tokens already acted on (each jti once per issuer), kept until the token could no longer verify.
+model Workeasy360LogoutToken {
+  issuer     String
+  jti        String
+  receivedAt DateTime @default(now()) @map("received_at") @db.Timestamptz(3)
+  expiresAt  DateTime @map("expires_at") @db.Timestamptz(3)
+
+  @@id([issuer, jti])
+  @@index([expiresAt])
+  @@map("workeasy360_logout_tokens")
   @@schema("public")
 }
 

@@ -16,17 +16,18 @@ export class AccessService {
   constructor(@Inject(DATABASE) private readonly db: Database) {}
 
   async organization(principal: AuthenticatedPrincipal, orgId: string): Promise<AccessContext | null> {
-    const facts = await this.orgFacts(principal.userId, orgId);
+    if (!this.withinBinding(principal, orgId)) return null;
+    const facts = await this.orgFacts(principal, orgId);
     if (!facts) return null;
     const permissions = organizationPermissions({ orgMembershipStatus: facts.status, orgRolePermissions: facts.rolePermissions });
     if (!permissions.size) return null;
-    return { orgId, workspaceId: null, orgRoleKey: facts.roleKey, permissions, workspaceAccess: null };
+    return { orgId, workspaceId: null, orgRoleKey: facts.roleKey, permissions, workspaceAccess: null, workeasy360OrganizationId: facts.workeasy360OrganizationId };
   }
 
   async workspace(principal: AuthenticatedPrincipal, workspaceId: string): Promise<AccessContext | null> {
     const orgId = await this.organizationOfWorkspace(principal.userId, workspaceId);
-    if (!orgId) return null;
-    const facts = await this.orgFacts(principal.userId, orgId);
+    if (!orgId || !this.withinBinding(principal, orgId)) return null;
+    const facts = await this.orgFacts(principal, orgId);
     if (!facts) return null;
     const ws = await this.db.withTenant({ orgId, workspaceId, userId: principal.userId }, async (tx) => {
       const workspace = await tx.workspace.findUnique({ where: { id: workspaceId }, select: { status: true } });
@@ -45,20 +46,31 @@ export class AccessService {
       workspaceStatus: ws.status,
     });
     if (!result) return null;
-    return { orgId, workspaceId, orgRoleKey: facts.roleKey, permissions: result.permissions, workspaceAccess: result.access };
+    return { orgId, workspaceId, orgRoleKey: facts.roleKey, permissions: result.permissions, workspaceAccess: result.access, workeasy360OrganizationId: facts.workeasy360OrganizationId };
+  }
+
+  /**
+   * A WorkEasy360 session reaches only the organization its ID token's organization is linked to
+   * (docs/workeasy360-sso.md): any other is "not found", even where the person is a member.
+   */
+  private withinBinding(principal: AuthenticatedPrincipal, orgId: string): boolean {
+    return !principal.workeasy360 || principal.workeasy360.boundOrgId === orgId;
   }
 
   /** The caller's membership facts in one organization, or null if they are not an active member of an active org. */
-  private async orgFacts(userId: string, orgId: string) {
+  private async orgFacts(principal: AuthenticatedPrincipal, orgId: string) {
+    const userId = principal.userId;
     return this.db.withTenant({ orgId, workspaceId: null, userId }, async (tx) => {
       const m = await tx.organizationMembership.findUnique({
         where: { orgId_userId: { orgId, userId } },
         select: { status: true, role: { select: { key: true, permissions: true, isSystem: true } } },
       });
       if (!m || m.status !== 'active') return null;
-      const org = await tx.organization.findUnique({ where: { id: orgId }, select: { status: true } });
+      const org = await tx.organization.findUnique({ where: { id: orgId }, select: { status: true, workeasy360OrganizationId: true } });
       if (org?.status !== 'active') return null;
-      return { status: m.status, roleKey: m.role.key, rolePermissions: effectiveRolePermissions(m.role) };
+      // The session's WorkEasy360 organization must still be the one this organization is linked to.
+      if (principal.workeasy360 && org.workeasy360OrganizationId !== principal.workeasy360.organizationId) return null;
+      return { status: m.status, roleKey: m.role.key, rolePermissions: effectiveRolePermissions(m.role), workeasy360OrganizationId: org.workeasy360OrganizationId };
     });
   }
 
