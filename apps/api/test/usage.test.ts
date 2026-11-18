@@ -109,13 +109,23 @@ describe('usage metering', () => {
   });
 
   it('the organization summary: counters summed, gauges at their latest snapshot, per workspace; billing.manage only', async () => {
-    const r = await owner.get(`/v1/organizations/${orgId}/usage?from=${encodeURIComponent('2026-10-01T00:00:00.000Z')}&to=${encodeURIComponent('2026-10-31T00:00:00.000Z')}`);
-    expect(r.status, JSON.stringify(r.body)).toBe(200);
-    const m = Object.fromEntries(r.body.meters.map((x: { meter: string }) => [x.meter, x]));
-    expect(m['campaign.executions']).toMatchObject({ kind: 'counter', total: 1, asOf: null, byWorkspace: [{ workspaceId: W, name: 'Main', value: 1 }] });
-    expect(m['contacts.active']).toMatchObject({ kind: 'gauge', total: 3, asOf: '2026-10-10T00:00:00.000Z' });
-    expect(m['messages.sent']).toMatchObject({ total: 0, byWorkspace: [] });
-    expect(m['ai.tokens']).toMatchObject({ total: 0 });
+    const summary = async (from: string, to: string) => {
+      const r = await owner.get(`/v1/organizations/${orgId}/usage?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      return Object.fromEntries(r.body.meters.map((x: { meter: string }) => [x.meter, x]));
+    };
+    // The campaign run is metered when it starts (today); the gauges were snapshotted for fixed days in October.
+    // Each is read in a period around its own time, so the test does not depend on today's date.
+    const ranAt = new Date((await q(`SELECT at FROM usage_records WHERE org_id = $1 AND meter = 'campaign.executions'`, [orgId]))[0]!.at).getTime();
+    const hour = 3_600_000;
+    const counters = await summary(new Date(ranAt - hour).toISOString(), new Date(ranAt + hour).toISOString());
+    expect(counters['campaign.executions']).toMatchObject({ kind: 'counter', total: 1, asOf: null, byWorkspace: [{ workspaceId: W, name: 'Main', value: 1 }] });
+    expect(counters['messages.sent']).toMatchObject({ total: 0, byWorkspace: [] });
+    expect(counters['ai.tokens']).toMatchObject({ total: 0 });
+    const october = await summary('2026-10-01T00:00:00.000Z', '2026-10-31T00:00:00.000Z');
+    expect(october['contacts.active']).toMatchObject({ kind: 'gauge', total: 3, asOf: '2026-10-10T00:00:00.000Z' });
+    // Counters are bounded by the period: October holds no run.
+    expect(october['campaign.executions']).toMatchObject({ total: 0, byWorkspace: [] });
     expect((await member.get(`/v1/organizations/${orgId}/usage`)).status).toBe(403);
     expect([403, 404]).toContain((await outsider.get(`/v1/organizations/${orgId}/usage`)).status);
     const other = await outsider.get(`/v1/organizations/${otherOrg}/usage`);
