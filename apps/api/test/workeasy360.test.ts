@@ -414,7 +414,7 @@ describe('organizations: a WorkEasy360 session never crosses organizations', () 
     const member = (await ownerAgent.get(`/v1/organizations/${orgId}/members`)).body.data.find((m: { userId: string }) => m.userId === colleagueId);
 
     const suspend = await ownerAgent.patch(`/v1/organizations/${orgId}/members/${colleagueId}`, { status: 'suspended', version: member.version });
-    expect(suspend.status).toBe(200);
+    expect(suspend.status).toBe(204);
     expect((await colleagueAgent.get(`/v1/organizations/${orgId}`)).status).toBe(404);
     fake.person = colleague;
     expect((await signIn(a, new Agent(a))).ssoError).toBe('membership_suspended');

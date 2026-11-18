@@ -280,7 +280,8 @@ export class Workeasy360SignInService {
         const membershipId = existing
           ? (await tx.organizationMembership.update({
               where: { id: existing.id },
-              data: { status: 'active', roleId: role.id, removedAt: null, suspendedAt: null, joinedAt: new Date(), updatedAt: new Date(), version: { increment: 1 } },
+              // joined_at is not updatable by the runtime role: the original join date stays.
+              data: { status: 'active', roleId: role.id, removedAt: null, suspendedAt: null, updatedAt: new Date(), version: { increment: 1 } },
             })).id
           : (await tx.organizationMembership.create({ data: { orgId, userId: principal.userId, roleId: role.id } })).id;
         await audit({ action: 'member.joined_via_workeasy360', targetType: 'user', targetId: principal.userId, metadata: { email: principal.email, role: role.key, rejoined: Boolean(existing) } });

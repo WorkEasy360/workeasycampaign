@@ -311,7 +311,7 @@
         "tags": [
           "Authentication"
         ],
-        "summary": "Sign out (revokes this session)",
+        "summary": "Sign out (revokes this session). ?workeasy360=true on a WorkEasy360 session also answers redirectUrl: WorkEasy360's end_session_endpoint with id_token_hint (\"Sign out of WorkEasy360 too\")",
         "description": "Access: `user`",
         "security": [
           {
@@ -626,6 +626,134 @@
         "responses": {
           "200": {
             "description": "Success"
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/workeasy360/start": {
+      "get": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "Sign in with WorkEasy360 Accounts (docs/workeasy360-sso.md): ?organization=<uuid> (the launcher's), ?next=<same-site path>. 302 to WorkEasy360 (Authorization Code + PKCE S256; state, nonce and verifier kept server-side, single use), or to /login?sso_error=<code>",
+        "description": "Access: `public`",
+        "security": [],
+        "parameters": [],
+        "responses": {
+          "302": {
+            "description": "Success"
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/workeasy360/callback": {
+      "get": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "WorkEasy360's redirect back: code exchange with private_key_jwt and PKCE, ID token verified, entitlement asked, organization mapped, session bound to that organization. 303 to the app, or to /login?sso_error=<code>",
+        "description": "Access: `public`",
+        "security": [],
+        "parameters": [],
+        "responses": {
+          "303": {
+            "description": "Success"
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/workeasy360/backchannel-logout": {
+      "post": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "OpenID Connect Back-Channel Logout 1.0 receiver (server to server; form field logout_token; no cookie, no CSRF): ends the sessions the verified token names on every instance. 200 also for a duplicate",
+        "description": "Access: `public`",
+        "security": [],
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "invalid logout token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "WorkEasy360 sign-in is off",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "key set or database unavailable: deliver again",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           },
           "default": {
             "description": "Error",
