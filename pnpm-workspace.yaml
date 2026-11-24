@@ -13,10 +13,19 @@ allowBuilds:
 engineStrict: true
 
 # Security (Gate D, 2026-10-09): fastify < 5.12.5 has 7 advisories (incl. X-Forwarded-* spoofing under hop-count
-# trustProxy, auth/validation bypasses). @nestjs/platform-fastify 11.x pins 5.11.3 exactly; 5.12.5 is the same major
+# trustProxy, auth/validation bypasses). @nestjs/platform-fastify 11.2.7 pins 5.11.3 exactly; 5.12.x is the same major
 # (semver-compatible). Remove once the Nest adapter depends on a fixed version.
+# 2026-11-18: 5.12.6 (GHSA-389g-gv7q-r4x8, header validation bypass via case-sensitive propertyNames; < 5.12.6).
 overrides:
-  fastify: 5.12.5
+  fastify: 5.12.6
+# Security (2026-11-18, production): transitive only, no direct dependency to bump. Same majors, patched releases;
+# remove once the parents depend on fixed versions.
+# fast-uri (GHSA-w74x-v6f9-j3xg, GHSA-wjr9-j795-jxcr, GHSA-xhq7-xmqj-769h, GHSA-333x-w4r6-6crp): 3.x via ajv
+# (^3.0.1), 4.x via @fastify/ajv-compiler and fast-json-stringify (^4.0.0). Pinned per major so ajv stays on 3.x.
+# ip-address (GHSA-rxp7-6hxx-x8q5, quadratic-time zone-id match) via @fastify/rate-limit (^10.2.0; 11.2.2 is the same).
+  fast-uri@3: 3.1.9
+  fast-uri@4: 4.2.3
+  ip-address@10: 10.7.4
 # Security (2026-10-09, dev tooling only): the prisma CLI pulls lodash (via Prisma Studio; code injection / prototype
 # pollution) and mysql2 (unused here: PostgreSQL only) at vulnerable versions. Same majors, patched releases. Remove
 # once prisma depends on fixed versions. deepmerge-ts (< 8, stack exhaustion on recursive input; only our own
