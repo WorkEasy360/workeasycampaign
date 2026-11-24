@@ -195,6 +195,8 @@ export class InvitationsService {
       throw Errors.tokenInvalid('This invitation is no longer valid. Ask for a new one.');
     }
     if (!ctx.principal.emailVerified) throw Errors.emailNotVerified();
+    // A WorkEasy360 session works in its own organization only.
+    if (ctx.principal.workeasy360 && ctx.principal.workeasy360.boundOrgId !== inv.orgId) throw Errors.workeasy360OrganizationManaged();
     if (ctx.principal.email.toLowerCase() !== inv.emailNormalized) {
       throw Errors.forbidden(`This invitation was sent to ${inv.email}. Sign in with that address to accept it.`);
     }

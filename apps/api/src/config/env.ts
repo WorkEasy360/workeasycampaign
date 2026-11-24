@@ -4,6 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { parseTrustProxy, type TrustProxySetting } from './trust-proxy.js';
+import { parseWorkeasy360Settings, type Workeasy360Settings } from '../modules/workeasy360/settings.js';
 
 /**
  * Environment configuration. Fails closed:
@@ -130,6 +131,19 @@ const schema = z
     SMTP_PORT: z.coerce.number().int().optional(),
     SMTP_USER: z.string().optional(),
     SMTP_PASS: z.string().optional(),
+    /** Sign-in with WorkEasy360 Accounts (docs/workeasy360-sso.md): off until WORKEASY360_ISSUER is set. Checked by parseWorkeasy360Settings. */
+    WORKEASY360_ISSUER: z.string().optional(),
+    WORKEASY360_CLIENT_ID: z.string().optional(),
+    WORKEASY360_PRODUCT_CODE: z.string().optional(),
+    WORKEASY360_REDIRECT_URI: z.string().optional(),
+    WORKEASY360_POST_LOGOUT_REDIRECT_URI: z.string().optional(),
+    WORKEASY360_KEY_ID: z.string().optional(),
+    WORKEASY360_PRIVATE_KEY_FILE: z.string().optional(),
+    WORKEASY360_SCOPES: z.string().optional(),
+    WORKEASY360_SSO_ONLY: z.string().optional(),
+    WORKEASY360_PROVISION_ORGANIZATIONS: z.string().optional(),
+    WORKEASY360_DEFAULT_ROLE: z.string().optional(),
+    WORKEASY360_DEFAULT_WORKSPACE_ROLE: z.string().optional(),
   })
   .superRefine((env, ctx) => {
     // Live delivery (any environment): everything real sending depends on must be configured, or boot fails.
@@ -211,6 +225,8 @@ export interface AppConfig {
   processRoles: ReadonlySet<ProcessRole>;
   jobConcurrency: number;
   cookies: { secure: boolean; sessionName: string; csrfName: string };
+  /** Sign-in with WorkEasy360 Accounts; null = off (docs/workeasy360-sso.md). */
+  workeasy360: Workeasy360Settings | null;
   mail:
     | { transport: 'file'; from: string; dir: string }
     | { transport: 'smtp'; from: string; host: string; port: number; user?: string; pass?: string };
@@ -274,6 +290,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     deliveryTracking: { opens: (e.DELIVERY_TRACKING ?? '').split(',').includes('opens'), clicks: (e.DELIVERY_TRACKING ?? '').split(',').includes('clicks') },
     processRoles: parseProcessRoles(e.PROCESS_ROLES),
     jobConcurrency: e.JOB_CONCURRENCY,
+    workeasy360: parseWorkeasy360Settings(e, { appUrl, isProduction }),
     cookies: isProduction
       ? // __Host- prefix: browser enforces Secure, Path=/ and no Domain, so subdomains cannot plant or read it.
         { secure: true, sessionName: '__Host-wk_session', csrfName: '__Host-wk_csrf' }

@@ -10,6 +10,8 @@ export class AppError extends Error {
     readonly headers?: Record<string, string>,
     /** Only with PREFLIGHT_FAILED: the blocking findings (never personal data). */
     readonly findings?: ReadinessFinding[],
+    /** Only with workeasy360_access_ended: WorkEasy360's entitlement reason. */
+    readonly reason?: string,
   ) {
     super(message);
     this.name = 'AppError';
@@ -43,4 +45,26 @@ export const Errors = {
   tokenInvalid: (message = 'This link is invalid or has expired') => new AppError('token_invalid', 400, message),
   idempotencyConflict: () =>
     new AppError('idempotency_conflict', 422, 'This Idempotency-Key was already used for a different request'),
+  // WorkEasy360 Accounts sign-in (docs/workeasy360-sso.md).
+  workeasy360SignInRequired: () => new AppError('workeasy360_sign_in_required', 401, 'Sign in with WorkEasy360 to continue'),
+  passwordSignInDisabled: () =>
+    new AppError('password_sign_in_disabled', 403, 'Password sign-in is turned off. Continue with WorkEasy360 instead.'),
+  workeasy360AccessEnded: (reason: string) =>
+    new AppError('workeasy360_access_ended', 403, ACCESS_ENDED_MESSAGES[reason] ?? ACCESS_ENDED_MESSAGES.not_entitled!, undefined, undefined, undefined, reason),
+  workeasy360ReadOnly: () =>
+    new AppError('workeasy360_read_only', 403, 'Your organization can view its data but not make changes until its subscription is renewed.'),
+  workeasy360AccessUnverified: () =>
+    new AppError('workeasy360_access_unverified', 403, 'Workeasy Campaign cannot confirm your access with WorkEasy360 right now. Try again in a few minutes.'),
+  workeasy360OrganizationManaged: () =>
+    new AppError('workeasy360_organization_managed', 403, 'You signed in with WorkEasy360 for one organization. Organizations come from WorkEasy360: switch organization there.'),
+};
+
+/** What the person is told, per WorkEasy360 entitlement reason (integration guide §7). */
+const ACCESS_ENDED_MESSAGES: Record<string, string> = {
+  not_entitled: "Your organization does not have Workeasy Campaign. Get it in WorkEasy360's store.",
+  expired: "Your organization's Workeasy Campaign subscription has ended. Renew it in WorkEasy360.",
+  suspended: "Your organization's access to Workeasy Campaign is suspended. Contact your administrator.",
+  read_only: "Your organization's subscription is read-only.",
+  membership_inactive: 'Your access to this organization has ended. Ask an administrator.',
+  no_seat: 'You do not have a Workeasy Campaign seat. Ask an administrator for one.',
 };

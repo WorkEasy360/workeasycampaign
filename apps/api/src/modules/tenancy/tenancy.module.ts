@@ -39,6 +39,6 @@ import {
     AuditQueryService,
     IdempotencyService,
   ],
-  exports: [AccessService, AccessGuard],
+  exports: [AccessService, AccessGuard, OrganizationsService],
 })
 export class TenancyModule {}

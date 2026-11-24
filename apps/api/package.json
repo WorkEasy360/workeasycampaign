@@ -28,14 +28,16 @@
     "argon2": "0.45.1",
     "bullmq": "5.81.5",
     "csv-parse": "7.0.3",
-    "fastify": "5.12.5",
+    "fastify": "5.12.6",
     "ioredis": "5.11.1",
+    "jose": "6.2.12",
     "libphonenumber-js": "1.13.14",
-    "nodemailer": "10.0.13",
+    "nodemailer": "10.1.4",
+    "openid-client": "6.8.8",
     "reflect-metadata": "0.2.2",
     "rxjs": "7.8.2",
     "uuid": "14.0.2",
-    "zod": "4.6.5"
+    "zod": "4.6.6"
   },
   "devDependencies": {
     "@types/node": "24.19.0",

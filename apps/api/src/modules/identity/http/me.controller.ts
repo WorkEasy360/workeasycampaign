@@ -52,6 +52,7 @@ export class MeController {
     @Body() body: unknown,
     @Res({ passthrough: true }) reply: FastifyReply,
   ) {
+    if (this.config.workeasy360?.ssoOnly) throw Errors.passwordSignInDisabled();
     const input = parse(changePasswordRequest, body);
     await this.local.changePassword(ctx.principal, input.currentPassword, input.newPassword, ctx.meta);
     const revoked = await this.sessions.revokeAll(ctx.principal.userId, 'password_changed', ctx.principal.sessionId);

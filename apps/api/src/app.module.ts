@@ -22,6 +22,8 @@ import { TenancyModule } from './modules/tenancy/tenancy.module.js';
 import { OpenApiController } from './openapi/openapi.controller.js';
 import type { DnsResolver } from './modules/campaigns/domain/deliverability.js';
 import { DNS_RESOLVER, NodeDnsResolver } from './modules/campaigns/infrastructure/node-dns-resolver.js';
+import { createWorkeasy360Runtime, WORKEASY360_RUNTIME, type Workeasy360RuntimeOptions } from './modules/workeasy360/runtime.js';
+import { Workeasy360Module } from './modules/workeasy360/workeasy360.module.js';
 
 export interface InfrastructureOverrides {
   mailer?: Mailer;
@@ -35,6 +37,8 @@ export interface InfrastructureOverrides {
   smsAdapter?: ChannelAdapter & { provider?: string };
   whatsappAdapter?: ChannelAdapter & { provider?: string };
   fileStore?: FileStore;
+  /** WorkEasy360 runtime options (tests: the entitlement cache's clock). */
+  workeasy360?: Workeasy360RuntimeOptions;
 }
 
 @Global()
@@ -70,6 +74,12 @@ class InfrastructureModule implements OnApplicationBootstrap, OnApplicationShutd
       },
       { provide: FILE_STORE, useValue: overrides.fileStore ?? new LocalFileStore(config.fileStoreDir) },
       { provide: DNS_RESOLVER, useValue: overrides.dnsResolver ?? new NodeDnsResolver() },
+      // Sign-in with WorkEasy360 Accounts: the OIDC client and the entitlement cache, or null when off.
+      {
+        provide: WORKEASY360_RUNTIME,
+        inject: [DATABASE],
+        useFactory: (db: Database) => (config.workeasy360 ? createWorkeasy360Runtime(config.workeasy360, db, overrides.workeasy360) : null),
+      },
       // The configured email provider (DELIVERY_PROVIDER + key), or none. Tests inject a double.
       {
         provide: DELIVERY_ADAPTER,
@@ -127,7 +137,7 @@ export class AppModule {
   static forRoot(config: AppConfig, overrides: InfrastructureOverrides = {}): DynamicModule {
     return {
       module: AppModule,
-      imports: [InfrastructureModule.forRoot(config, overrides), IdentityModule, TenancyModule, AudienceModule, CampaignsModule.forRoot(AudienceModule), UsageModule.forRoot(AudienceModule)],
+      imports: [InfrastructureModule.forRoot(config, overrides), IdentityModule, TenancyModule, Workeasy360Module, AudienceModule, CampaignsModule.forRoot(AudienceModule), UsageModule.forRoot(AudienceModule)],
       controllers: [HealthController, OpenApiController],
       providers: [
         ShutdownState,

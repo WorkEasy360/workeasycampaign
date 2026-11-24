@@ -58,6 +58,33 @@ export interface ResolvedSession {
   absoluteExpiresAt: Date;
   revokedAt: Date | null;
   isPreviousToken: boolean;
+  /** Set for WorkEasy360 sessions only (docs/workeasy360-sso.md). */
+  workeasy360: Workeasy360SessionBinding | null;
+}
+
+/** Who a WorkEasy360 session belongs to, and the one organization here it may use. */
+export interface Workeasy360SessionBinding {
+  issuer: string;
+  subject: string;
+  /** The provider's sign-in id, when its ID token carried one. */
+  sid: string | null;
+  /** The WorkEasy360 organization the ID token named. */
+  organizationId: string;
+  /** The Campaign organization linked to it: the only one this session may use. */
+  boundOrgId: string;
+}
+
+/** app.workeasy360_link_identity: linking is on (issuer, subject) only, never on email. */
+export type Workeasy360LinkOutcome =
+  | { outcome: 'linked' | 'created'; userId: string }
+  | { outcome: 'email_taken' | 'issuer_conflict'; userId: null };
+
+export interface Workeasy360LoginFlow {
+  state: string;
+  nonce: string;
+  codeVerifier: string;
+  organizationHint: string | null;
+  returnTo: string | null;
 }
 
 export interface InvitationLookup {
@@ -154,6 +181,24 @@ export interface SystemQueries {
   refundSendTokens(buckets: SendRateBucket[], count: number): Promise<void>;
   /** Active workspaces of active organizations, keyset by workspace id (daily usage snapshots, Phase 7.13). */
   usageSnapshotWorkspaces(after: string | null, limit: number): Promise<{ orgId: string; workspaceId: string }[]>;
+  /**
+   * WorkEasy360 Accounts sign-in (docs/workeasy360-sso.md). Each maps to one SECURITY DEFINER function of migration
+   * 20261102000000_workeasy360_sso.
+   */
+  workeasy360: {
+    /** Links a verified WorkEasy360 person on (issuer, subject), creating the user on first sight; never by email. */
+    linkIdentity(input: { issuer: string; subject: string; email: string; displayName: string }): Promise<Workeasy360LinkOutcome>;
+    /** The organization here linked to a WorkEasy360 organization, if any. */
+    tenantOf(organizationId: string): Promise<{ orgId: string; status: string } | null>;
+    saveLoginFlow(idHash: string, flow: Workeasy360LoginFlow, ttlSeconds: number): Promise<void>;
+    /** Takes (deletes) an unexpired flow: each flow is used at most once. */
+    takeLoginFlow(idHash: string): Promise<Workeasy360LoginFlow | null>;
+    getAnswer(key: string): Promise<string | null>;
+    /** `ttlSeconds` null: kept without expiry. */
+    putAnswer(key: string, value: string, ttlSeconds: number | null): Promise<void>;
+    /** Records the logout token's jti once and ends the sessions it names, in one transaction. */
+    endSessions(input: { issuer: string; jti: string; subject?: string | undefined; sid?: string | undefined; acceptableUntil: Date }): Promise<{ replayed: boolean; sessionsEnded: number }>;
+  };
 }
 
 /** One sending-rate bucket: `provider:<name>`, `workspace:<id>` or `execution:<id>`. */
@@ -268,6 +313,11 @@ export function createDatabase(options: DatabaseOptions): Database {
           absolute_expires_at: Date;
           revoked_at: Date | null;
           is_previous_token: boolean;
+          workeasy360_issuer: string | null;
+          workeasy360_subject: string | null;
+          workeasy360_sid: string | null;
+          workeasy360_organization_id: string | null;
+          bound_org_id: string | null;
         }[]
       >`SELECT * FROM app.resolve_session(${tokenHash})`;
       const r = rows[0];
@@ -287,6 +337,16 @@ export function createDatabase(options: DatabaseOptions): Database {
             absoluteExpiresAt: r.absolute_expires_at,
             revokedAt: r.revoked_at,
             isPreviousToken: r.is_previous_token,
+            workeasy360:
+              r.provider === 'workeasy360' && r.workeasy360_issuer && r.workeasy360_subject && r.workeasy360_organization_id && r.bound_org_id
+                ? {
+                    issuer: r.workeasy360_issuer,
+                    subject: r.workeasy360_subject,
+                    sid: r.workeasy360_sid,
+                    organizationId: r.workeasy360_organization_id,
+                    boundOrgId: r.bound_org_id,
+                  }
+                : null,
           }
         : null;
     },
@@ -406,6 +466,44 @@ export function createDatabase(options: DatabaseOptions): Database {
     async recordSecurityEvent(e) {
       await prisma.$executeRaw`SELECT app.record_security_event(${e.userId}::uuid, ${e.type}, ${e.ipAddress},
         ${e.userAgent}, ${e.correlationId}::uuid, ${JSON.stringify(e.metadata ?? {})}::jsonb)`;
+    },
+    workeasy360: {
+      async linkIdentity(i) {
+        const [r] = await prisma.$queryRaw<{ user_id: string | null; outcome: string }[]>`
+          SELECT user_id, outcome FROM app.workeasy360_link_identity(${i.issuer}, ${i.subject}, ${i.email}, ${i.displayName})`;
+        if (r && (r.outcome === 'linked' || r.outcome === 'created') && r.user_id) return { outcome: r.outcome, userId: r.user_id };
+        if (r && (r.outcome === 'email_taken' || r.outcome === 'issuer_conflict')) return { outcome: r.outcome, userId: null };
+        throw new Error(`unexpected workeasy360_link_identity outcome: ${r?.outcome ?? 'none'}`);
+      },
+      async tenantOf(organizationId) {
+        assertUuid(organizationId, 'organizationId');
+        const [r] = await prisma.$queryRaw<{ org_id: string; status: string }[]>`
+          SELECT org_id, status FROM app.workeasy360_tenant(${organizationId}::uuid)`;
+        return r ? { orgId: r.org_id, status: r.status } : null;
+      },
+      async saveLoginFlow(idHash, f, ttlSeconds) {
+        assertUuid(f.organizationHint, 'organizationHint');
+        await prisma.$executeRaw`SELECT app.workeasy360_save_flow(${idHash}, ${f.state}, ${f.nonce}, ${f.codeVerifier},
+          ${f.organizationHint}::uuid, ${f.returnTo}, ${ttlSeconds}::int)`;
+      },
+      async takeLoginFlow(idHash) {
+        const [r] = await prisma.$queryRaw<{ state: string; nonce: string; code_verifier: string; organization_hint: string | null; return_to: string | null }[]>`
+          SELECT state, nonce, code_verifier, organization_hint, return_to FROM app.workeasy360_take_flow(${idHash})`;
+        return r ? { state: r.state, nonce: r.nonce, codeVerifier: r.code_verifier, organizationHint: r.organization_hint, returnTo: r.return_to } : null;
+      },
+      async getAnswer(key) {
+        const [r] = await prisma.$queryRaw<{ value: string | null }[]>`SELECT app.workeasy360_answer_get(${key}) AS value`;
+        return r?.value ?? null;
+      },
+      async putAnswer(key, value, ttlSeconds) {
+        await prisma.$executeRaw`SELECT app.workeasy360_answer_put(${key}, ${value}, ${ttlSeconds}::int)`;
+      },
+      async endSessions(i) {
+        const [r] = await prisma.$queryRaw<{ replayed: boolean; sessions_ended: number }[]>`
+          SELECT replayed, sessions_ended FROM app.workeasy360_end_sessions(${i.issuer}, ${i.jti}, ${i.subject ?? null},
+            ${i.sid ?? null}, ${i.acceptableUntil}::timestamptz)`;
+        return { replayed: !!r?.replayed, sessionsEnded: r?.sessions_ended ?? 0 };
+      },
     },
   };
 

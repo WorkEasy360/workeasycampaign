@@ -1,5 +1,10 @@
 # Identity and sessions
 
+> **WorkEasy360 Accounts sign-in is built** ([workeasy360-sso.md](workeasy360-sso.md)): an OpenID Connect relying party
+> next to the local provider, with sessions of provider `workeasy360` bound to one organization, people linked on
+> (issuer, sub) (never by email), and back-channel logout. The local provider below stays unless
+> `WORKEASY360_SSO_ONLY=true`.
+
 As implemented in Phase 4, following decision D1 (option C). Campaigns ships its own login today, built behind a
 provider abstraction so Workeasy-wide SSO can replace it without migrating organization or content data.
 

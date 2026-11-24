@@ -19,9 +19,10 @@ export class ErrorFilter implements ExceptionFilter {
     let message = 'Something went wrong on our side. Please try again.';
     let fields: Record<string, string[]> | undefined;
     let findings: ApiErrorBody['error']['findings'];
+    let reason: string | undefined;
 
     if (exception instanceof AppError) {
-      ({ status, code, message, fields, findings } = exception);
+      ({ status, code, message, fields, findings, reason } = exception);
       for (const [k, v] of Object.entries(exception.headers ?? {})) reply.header(k, v);
     } else if (exception instanceof HttpException) {
       status = exception.getStatus();
@@ -49,7 +50,7 @@ export class ErrorFilter implements ExceptionFilter {
     // upload) leaves the connection mid-body: a client that stops sending but keeps the socket alive would have its NEXT
     // request swallowed as the rest of this body and hang. Close such connections so they are never reused.
     if (!req.raw.complete) reply.header('connection', 'close');
-    const body: ApiErrorBody = { error: { code, message, ...(fields ? { fields } : {}), ...(findings ? { findings } : {}), requestId } };
+    const body: ApiErrorBody = { error: { code, message, ...(fields ? { fields } : {}), ...(findings ? { findings } : {}), ...(reason ? { reason } : {}), requestId } };
     void reply.status(status).header('cache-control', 'no-store').send(body);
   }
 }

@@ -9,6 +9,7 @@ import {
   FileText,
   GitBranch,
   LayoutDashboard,
+  LogIn,
   LogOut,
   Mail,
   Menu,
@@ -21,7 +22,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { http } from '@/lib/api';
 import { cx } from '@/lib/format';
-import { keys, useResetCache } from '@/lib/session';
+import { keys, useResetCache, useSession } from '@/lib/session';
 import { Logo } from './brand';
 import { Avatar, Badge, useToast } from './ui';
 import { useContextSafe } from './use-context-safe';
@@ -195,6 +196,9 @@ function UserMenu() {
   const ctx = useContextSafe();
   const router = useRouter();
   const reset = useResetCache();
+  const session = useSession();
+  // A WorkEasy360 session may also end its WorkEasy360 sign-in (docs/workeasy360-sso.md §Signing out).
+  const workeasy360 = session.data?.user?.signInMethod === 'workeasy360';
   if (!ctx) return null;
   return (
     <div className="flex items-center gap-3 rounded-control border-t border-line px-2 pt-3">
@@ -216,6 +220,23 @@ function UserMenu() {
       >
         <LogOut className="size-4" />
       </button>
+      {workeasy360 && (
+        <button
+          type="button"
+          aria-label="Sign out of WorkEasy360 too"
+          title="Sign out of WorkEasy360 too"
+          className="rounded-control p-2 text-ink-muted hover:bg-surface-muted hover:text-ink"
+          onClick={async () => {
+            // Ends this session first, then WorkEasy360 asks the person to confirm its own sign-out.
+            const r = await http.post<{ redirectUrl: string | null }>('/v1/auth/logout?workeasy360=true').catch(() => null);
+            await reset();
+            if (r?.redirectUrl) window.location.assign(r.redirectUrl);
+            else router.replace('/login');
+          }}
+        >
+          <LogIn className="size-4 rotate-180" />
+        </button>
+      )}
     </div>
   );
 }

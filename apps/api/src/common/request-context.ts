@@ -20,6 +20,8 @@ export interface AccessContext {
   permissions: ReadonlySet<Permission>;
   /** How workspace access was granted (explicit membership, or an organization-wide permission). */
   workspaceAccess: 'explicit' | 'organization' | null;
+  /** The WorkEasy360 organization this organization is linked to (its entitlement is then checked), or null. */
+  workeasy360OrganizationId?: string | null;
 }
 
 declare module 'fastify' {
